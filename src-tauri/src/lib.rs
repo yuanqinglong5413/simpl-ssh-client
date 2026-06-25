@@ -20,6 +20,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(session::SessionManager::default())
+        .manage(session::SftpManager::default())
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
@@ -32,6 +33,13 @@ pub fn run() {
             commands::ssh_list_sessions,
             commands::ssh_disconnect,
             commands::terminal_open,
+            commands::sftp_list,
+            commands::sftp_mkdir,
+            commands::sftp_rename,
+            commands::sftp_remove,
+            commands::sftp_upload,
+            commands::sftp_upload_dir,
+            commands::sftp_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,6 +6,7 @@ import { TabBar } from "./components/TabBar";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectDialog } from "./components/ConnectDialog";
 import { TerminalPane } from "./components/TerminalPane";
+import { SftpPane } from "./components/SftpPane";
 import type { SessionInfo, Tab } from "./types";
 import "./App.css";
 
@@ -29,7 +30,7 @@ function App() {
   }, []);
 
   function openTerminal(s: SessionInfo) {
-    const existing = tabs.find((t) => t.sessionId === s.id);
+    const existing = tabs.find((t) => t.sessionId === s.id && t.kind === "terminal");
     if (existing) {
       setActiveTabId(existing.id);
       return;
@@ -38,6 +39,23 @@ function App() {
       id: crypto.randomUUID(),
       sessionId: s.id,
       title: `${s.user}@${s.host}`,
+      kind: "terminal",
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  function openSftp(s: SessionInfo) {
+    const existing = tabs.find((t) => t.sessionId === s.id && t.kind === "sftp");
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const tab: Tab = {
+      id: crypto.randomUUID(),
+      sessionId: s.id,
+      title: `${s.user}@${s.host} · 文件`,
+      kind: "sftp",
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
@@ -68,7 +86,7 @@ function App() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeSession = activeTab
-    ? (sessions.find((s) => s.id === activeTab.sessionId) ?? null)
+    ? sessions.find((s) => s.id === activeTab.sessionId) ?? null
     : null;
 
   return (
@@ -76,7 +94,8 @@ function App() {
       <Sidebar
         sessions={sessions}
         activeSessionId={activeTab?.sessionId ?? null}
-        onOpen={openTerminal}
+        onOpenTerminal={openTerminal}
+        onOpenSftp={openSftp}
         onDisconnect={disconnect}
         onNew={() => setShowConnect(true)}
       />
@@ -97,7 +116,9 @@ function App() {
                 <TerminalIcon size={26} />
               </div>
               <div className="empty-title">还没有打开的终端</div>
-              <div className="empty-hint">从左侧选一个连接，或点 + 新建一个</div>
+              <div className="empty-hint">
+                从左侧选一个连接（终端 / 文件），或点 + 新建一个
+              </div>
             </div>
           ) : (
             tabs.map((t) => (
@@ -105,7 +126,11 @@ function App() {
                 key={t.id}
                 className={`pane ${t.id === activeTabId ? "active" : ""}`}
               >
-                <TerminalPane sessionId={t.sessionId} />
+                {t.kind === "sftp" ? (
+                  <SftpPane sessionId={t.sessionId} />
+                ) : (
+                  <TerminalPane sessionId={t.sessionId} />
+                )}
               </div>
             ))
           )}

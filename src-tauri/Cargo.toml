@@ -37,4 +37,5 @@ chrono = "0.4.45"
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
+rfd = "0.17.2"
 

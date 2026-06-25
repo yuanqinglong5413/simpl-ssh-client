@@ -6,10 +6,12 @@
 
 pub mod manager;
 pub mod pty;
+pub mod sftp;
 pub mod ssh;
 
 pub use manager::{SessionInfo, SessionManager};
 pub use pty::TerminalBridge;
+pub use sftp::SftpManager;
 pub use ssh::{connect_and_exec, SshConnectParams};
 
 use russh::client;

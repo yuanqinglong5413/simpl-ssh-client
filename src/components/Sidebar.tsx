@@ -1,10 +1,11 @@
-import { Plus, Terminal, X } from "lucide-react";
+import { Folder, Plus, Terminal, X } from "lucide-react";
 import type { SessionInfo } from "../types";
 
 type Props = {
   sessions: SessionInfo[];
   activeSessionId: string | null;
-  onOpen: (s: SessionInfo) => void;
+  onOpenTerminal: (s: SessionInfo) => void;
+  onOpenSftp: (s: SessionInfo) => void;
   onDisconnect: (id: string) => void;
   onNew: () => void;
 };
@@ -12,7 +13,8 @@ type Props = {
 export function Sidebar({
   sessions,
   activeSessionId,
-  onOpen,
+  onOpenTerminal,
+  onOpenSftp,
   onDisconnect,
   onNew,
 }: Props) {
@@ -38,7 +40,8 @@ export function Sidebar({
               className={`session-item ${
                 s.id === activeSessionId ? "active" : ""
               }`}
-              onClick={() => onOpen(s)}
+              onClick={() => onOpenTerminal(s)}
+              title={`${s.user}@${s.host}:${s.port}`}
             >
               <span className="status-dot on" />
               <span className="session-meta">
@@ -49,6 +52,16 @@ export function Sidebar({
                   {s.host}:{s.port}
                 </div>
               </span>
+              <button
+                className="session-x"
+                title="打开文件面板"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenSftp(s);
+                }}
+              >
+                <Folder size={13} />
+              </button>
               <button
                 className="session-x"
                 title="断开"
