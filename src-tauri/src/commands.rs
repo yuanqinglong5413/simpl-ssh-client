@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
+use crate::session::profile::ProfileStore;
 use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::{
@@ -39,9 +40,12 @@ pub async fn ssh_exec(
 }
 
 /// 建立持久会话（连接 + 密码认证），返回会话信息。终端 / SFTP 复用此会话。
+/// `connect_id` 用于关联 `ssh://progress` 阶段事件，前端据此展示连接进度。
 #[tauri::command]
 pub async fn ssh_connect(
     state: tauri::State<'_, SessionManager>,
+    app: AppHandle,
+    connect_id: String,
     host: String,
     port: u16,
     user: String,
@@ -53,7 +57,10 @@ pub async fn ssh_connect(
         user,
         password,
     };
-    state.connect(&params).await.map_err(|e| e.to_string())
+    state
+        .connect(&params, &app, &connect_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 列出当前所有持久会话。
@@ -413,4 +420,62 @@ async fn stream_with_progress(
         );
     }
     Ok(())
+}
+
+// ==============================  连接配置  =================================
+
+/// 列出所有保存的连接配置。
+#[tauri::command]
+pub async fn profile_list(
+    state: tauri::State<'_, ProfileStore>,
+) -> Result<Vec<crate::session::profile::ConnectionProfile>, String> {
+    Ok(state.list().await)
+}
+
+/// 保存一个连接配置（密码进 OS 钥匙串，元数据进本地 JSON）。返回新建的配置。
+#[tauri::command]
+pub async fn profile_save(
+    state: tauri::State<'_, ProfileStore>,
+    name: String,
+    host: String,
+    port: u16,
+    user: String,
+    password: String,
+) -> Result<crate::session::profile::ConnectionProfile, String> {
+    state.save(name, host, port, user, password).await
+}
+
+/// 删除一个保存的连接配置（同时清理钥匙串）。
+#[tauri::command]
+pub async fn profile_delete(
+    state: tauri::State<'_, ProfileStore>,
+    id: String,
+) -> Result<(), String> {
+    state.delete(&id).await
+}
+
+/// 用保存的配置直接连接（从钥匙串取密码）。
+#[tauri::command]
+pub async fn profile_connect(
+    state: tauri::State<'_, ProfileStore>,
+    sessions: tauri::State<'_, SessionManager>,
+    app: AppHandle,
+    connect_id: String,
+    id: String,
+) -> Result<SessionInfo, String> {
+    let p = state
+        .find(&id)
+        .await
+        .ok_or_else(|| format!("profile not found: {id}"))?;
+    let password = state.get_password(&p.id).await?;
+    let params = SshConnectParams {
+        host: p.host,
+        port: p.port,
+        user: p.user,
+        password,
+    };
+    sessions
+        .connect(&params, &app, &connect_id)
+        .await
+        .map_err(|e| e.to_string())
 }

@@ -5,11 +5,14 @@
 //! - `pty`      PTY channel + 本地 WebSocket 终端传输。
 
 pub mod manager;
+pub mod profile;
 pub mod pty;
+pub mod secrets;
 pub mod sftp;
 pub mod ssh;
 
 pub use manager::{SessionInfo, SessionManager};
+pub use profile::ProfileStore;
 pub use pty::TerminalBridge;
 pub use sftp::SftpManager;
 pub use ssh::{connect_and_exec, SshConnectParams};

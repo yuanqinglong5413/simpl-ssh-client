@@ -1,21 +1,17 @@
-import { Folder, Plus, Terminal, X } from "lucide-react";
-import type { SessionInfo } from "../types";
+import { Plus, Server, Terminal, Trash2 } from "lucide-react";
+import type { ConnectionProfile } from "../types";
 
 type Props = {
-  sessions: SessionInfo[];
-  activeSessionId: string | null;
-  onOpenTerminal: (s: SessionInfo) => void;
-  onOpenSftp: (s: SessionInfo) => void;
-  onDisconnect: (id: string) => void;
+  profiles: ConnectionProfile[];
+  onConnectProfile: (id: string) => void;
+  onDeleteProfile: (id: string) => void;
   onNew: () => void;
 };
 
 export function Sidebar({
-  sessions,
-  activeSessionId,
-  onOpenTerminal,
-  onOpenSftp,
-  onDisconnect,
+  profiles,
+  onConnectProfile,
+  onDeleteProfile,
   onNew,
 }: Props) {
   return (
@@ -29,48 +25,41 @@ export function Sidebar({
         </span>
       </div>
 
-      <div className="sidebar-label">连接</div>
       <div className="session-list">
-        {sessions.length === 0 ? (
-          <div className="sidebar-empty">还没有连接。点下方按钮新建一个。</div>
+        <div className="sidebar-label">已保存的连接 ({profiles.length})</div>
+        {profiles.length === 0 ? (
+          <div className="sidebar-empty">
+            还没有保存的连接。
+            <br />
+            点下方"新建连接"，勾选保存即可收藏到这里。
+          </div>
         ) : (
-          sessions.map((s) => (
+          profiles.map((p) => (
             <div
-              key={s.id}
-              className={`session-item ${
-                s.id === activeSessionId ? "active" : ""
-              }`}
-              onClick={() => onOpenTerminal(s)}
-              title={`${s.user}@${s.host}:${s.port}`}
+              key={p.id}
+              className="session-item"
+              onClick={() => onConnectProfile(p.id)}
+              title="点击连接"
             >
-              <span className="status-dot on" />
+              <Server
+                size={13}
+                style={{ color: "var(--accent)", flexShrink: 0 }}
+              />
               <span className="session-meta">
-                <div className="session-title">
-                  {s.user}@{s.host}
-                </div>
+                <div className="session-title">{p.name}</div>
                 <div className="session-sub">
-                  {s.host}:{s.port}
+                  {p.user}@{p.host}:{p.port}
                 </div>
               </span>
               <button
                 className="session-x"
-                title="打开文件面板"
+                title="删除"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onOpenSftp(s);
+                  onDeleteProfile(p.id);
                 }}
               >
-                <Folder size={13} />
-              </button>
-              <button
-                className="session-x"
-                title="断开"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDisconnect(s.id);
-                }}
-              >
-                <X size={13} />
+                <Trash2 size={13} />
               </button>
             </div>
           ))
@@ -78,7 +67,7 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-foot">
-        <button className="btn btn-ghost btn-block" onClick={onNew}>
+        <button className="btn btn-primary btn-block" onClick={onNew}>
           <Plus size={15} /> 新建连接
         </button>
       </div>

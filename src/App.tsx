@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Terminal as TerminalIcon } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
@@ -7,26 +8,58 @@ import { StatusBar } from "./components/StatusBar";
 import { ConnectDialog } from "./components/ConnectDialog";
 import { TerminalPane } from "./components/TerminalPane";
 import { SftpPane } from "./components/SftpPane";
-import type { SessionInfo, Tab } from "./types";
+import { ConnSteps } from "./components/ConnSteps";
+import type { ConnectionProfile, SessionInfo, Tab } from "./types";
 import "./App.css";
 
 function App() {
+  const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [showConnect, setShowConnect] = useState(false);
   const [toast, setToast] = useState("");
+  const [connecting, setConnecting] = useState<{
+    cid: string;
+    name: string;
+    stage: string;
+    message: string;
+  } | null>(null);
 
-  const refresh = async () => {
+  const refreshSessions = async () => {
     try {
       setSessions(await invoke<SessionInfo[]>("ssh_list_sessions"));
     } catch (e) {
       setToast(String(e));
     }
   };
+  const refreshProfiles = async () => {
+    try {
+      setProfiles(await invoke<ConnectionProfile[]>("profile_list"));
+    } catch (e) {
+      setToast(String(e));
+    }
+  };
 
   useEffect(() => {
-    refresh();
+    refreshSessions();
+    refreshProfiles();
+  }, []);
+
+  // 侧栏一键连接时，按 connectId 跟踪后端推送的阶段进度
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ connect_id: string; stage: string; message: string }>(
+      "ssh://progress",
+      (e) => {
+        setConnecting((prev) =>
+          prev && prev.cid === e.payload.connect_id
+            ? { ...prev, stage: e.payload.stage, message: e.payload.message }
+            : prev
+        );
+      }
+    ).then((fn) => (unlisten = fn));
+    return () => unlisten?.();
   }, []);
 
   function openTerminal(s: SessionInfo) {
@@ -66,20 +99,51 @@ function App() {
     setActiveTabId((prev) => (prev === id ? null : prev));
   }
 
+  async function connectProfile(id: string) {
+    setToast("");
+    const profile = profiles.find((p) => p.id === id);
+    const name = profile?.name ?? "服务器";
+    const cid = crypto.randomUUID();
+    setConnecting({ cid, name, stage: "resolve", message: "开始连接…" });
+    try {
+      const s = await invoke<SessionInfo>("profile_connect", {
+        id,
+        connectId: cid,
+      });
+      await refreshSessions();
+      setConnecting(null);
+      openTerminal(s);
+    } catch (e) {
+      setConnecting(null);
+      setToast(String(e));
+    }
+  }
+
+  async function deleteProfile(id: string) {
+    setToast("");
+    try {
+      await invoke("profile_delete", { id });
+      await refreshProfiles();
+    } catch (e) {
+      setToast(String(e));
+    }
+  }
+
   async function disconnect(id: string) {
     const wasActive = tabs.some((t) => t.id === activeTabId && t.sessionId === id);
     setTabs((prev) => prev.filter((t) => t.sessionId !== id));
     if (wasActive) setActiveTabId(null);
     try {
       await invoke("ssh_disconnect", { id });
-      await refresh();
+      await refreshSessions();
     } catch (e) {
       setToast(String(e));
     }
   }
 
   async function onConnected(s: SessionInfo) {
-    await refresh();
+    await refreshSessions();
+    await refreshProfiles();
     setShowConnect(false);
     openTerminal(s);
   }
@@ -92,11 +156,9 @@ function App() {
   return (
     <div className="app">
       <Sidebar
-        sessions={sessions}
-        activeSessionId={activeTab?.sessionId ?? null}
-        onOpenTerminal={openTerminal}
-        onOpenSftp={openSftp}
-        onDisconnect={disconnect}
+        profiles={profiles}
+        onConnectProfile={connectProfile}
+        onDeleteProfile={deleteProfile}
         onNew={() => setShowConnect(true)}
       />
 
@@ -136,7 +198,12 @@ function App() {
           )}
         </main>
 
-        <StatusBar session={activeSession} tabCount={tabs.length} />
+        <StatusBar
+          session={activeSession}
+          tabCount={tabs.length}
+          onOpenSftp={() => activeSession && openSftp(activeSession)}
+          onDisconnect={() => activeSession && disconnect(activeSession.id)}
+        />
       </div>
 
       {showConnect && (
@@ -144,6 +211,17 @@ function App() {
           onClose={() => setShowConnect(false)}
           onConnected={onConnected}
         />
+      )}
+
+      {connecting && (
+        <div className="connecting">
+          <div className="connecting-card">
+            <div className="conn-spinner" />
+            <div className="connecting-title">正在连接 {connecting.name}</div>
+            <div className="connecting-msg">{connecting.message}</div>
+            <ConnSteps stage={connecting.stage} />
+          </div>
+        </div>
       )}
 
       {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}

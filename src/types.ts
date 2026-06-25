@@ -6,6 +6,14 @@ export type SessionInfo = {
   created_at: string;
 };
 
+export type ConnectionProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+};
+
 export type Tab = {
   id: string;
   sessionId: string;

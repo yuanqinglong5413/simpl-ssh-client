@@ -26,10 +26,12 @@
 
 ## ✨ 特性
 
-- 🔌 **多会话管理** —— 侧栏连接列表，一键开终端；多 Tab，切换 Tab 时后台终端不被打断。
-- 💻 **交互式终端** —— xterm.js（WebGL 加速），完整 PTY，支持 vim / htop / tmux 等交互程序。
+- 🔌 **多会话管理** —— 侧栏连接库，一键开终端；多 Tab，切换 Tab 时后台终端不被打断。
+- 💾 **保存的连接** —— 连接配置存本地，密码进系统钥匙串（不落明文）；24h 内重复连接走内存加密缓存，不再反复弹授权框。
+- 💻 **交互式终端** —— xterm.js v6（WebGL 加速），完整 PTY，支持 vim / htop / tmux 等交互程序。
+- 📂 **SFTP 文件面板** —— 与终端共享同一条 SSH 连接，浏览 / 上传 / 下载 / 目录递归传输，带进度。
+- ⏱ **连接进度可见** —— 解析 → 握手 → 认证 分段超时 + 阶段反馈，告别黑盒"连接中…"。
 - 🎨 **现代暗色界面** —— 深墨 + 琥珀（CRT 致敬）配色，IBM Plex 字体，IDE 式布局。
-- 🔗 **共享连接架构** —— 终端与（即将到来的）SFTP 跑在同一条 SSH 连接上。
 - 🖥 **三端** —— macOS / Windows / Linux。
 
 ## 📷 截图
@@ -78,7 +80,7 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
 
 | 层 | 选型 |
 |----|------|
-| 前端 | React 19 · TypeScript · xterm.js v5（WebGL） |
+| 前端 | React 19 · TypeScript · xterm.js v6（WebGL） |
 | 桥接 | Tauri 2（系统 WebView） |
 | SSH 协议 | [russh](https://github.com/Eugeny/russh) + russh-sftp（纯 Rust、async） |
 | 终端传输 | tokio-tungstenite（PTY 走本地 WebSocket 流式） |
@@ -99,6 +101,9 @@ simpl-ssh-client/
 │       └── session/
 │           ├── manager.rs    # 会话池（持久连接，终端/SFTP 共享）
 │           ├── pty.rs        # PTY channel + 本地 WebSocket 终端传输
+│           ├── sftp.rs       # SFTP 文件传输（复用会话连接）
+│           ├── profile.rs    # 保存的连接配置 + 钥匙串
+│           ├── secrets.rs    # 密码内存加密缓存（AES-256-GCM）
 │           └── ssh.rs        # russh 连接 / 认证
 ├── .github/workflows/        # CI 检查 + 多平台自动打包发布
 └── docs/DESIGN.md            # 设计与架构
@@ -109,7 +114,8 @@ simpl-ssh-client/
 - [x] SSH 连接（密码认证）+ 交互式 PTY 终端
 - [x] 多会话、多 Tab 终端管理
 - [x] **SFTP 文件面板**（浏览 / 上传 / 下载 / 目录递归传输）
-- [ ] 凭据加密存储（OS 钥匙串 + age）
+- [x] **保存的连接** + 凭据加密存储（OS 钥匙串 + 内存 AES-256-GCM 缓存）
+- [x] 连接过程分段超时 + 阶段进度反馈
 - [ ] 主机公钥校验（known_hosts）
 - [ ] 分屏、连接分组树、传输队列
 - [ ] 系统监控面板、端口转发、跳板机

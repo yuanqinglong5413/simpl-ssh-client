@@ -2,18 +2,51 @@
 //!
 //! 核心思想：一个连接 = 一个 `SessionEntry`，持有认证后的 russh `Handle`。
 //! 终端、SFTP 各自在这个 Handle 上开 channel，互不影响、共享同一条 TCP/SSH 连接。
+//!
+//! 连接过程分三段（解析+TCP / SSH 握手 / 认证），每段独立超时，并向前端推送
+//! `ssh://progress` 事件，让 UI 能展示"解析主机 → 加密握手 → 身份认证"的进度，
+//! 而不是一个黑盒 await（否则用户只看到"连接中…"，卡住时毫无反馈）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::client;
 use russh::Disconnect;
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::ssh::SshConnectParams;
 use super::ClientHandler;
+
+/// TCP 建连（含 DNS 解析）超时。不通时快速失败，而不是任由系统 SYN 重传挂死。
+const TCP_TTL: Duration = Duration::from_secs(12);
+/// SSH 协议握手（版本协商 + 密钥交换）超时。
+const HANDSHAKE_TTL: Duration = Duration::from_secs(15);
+/// 密码认证超时。
+const AUTH_TTL: Duration = Duration::from_secs(12);
+
+/// 推给前端的连接进度。`stage` ∈ resolve | handshake | auth | ready。
+#[derive(Clone, Serialize)]
+pub struct ConnectProgress {
+    pub connect_id: String,
+    pub stage: String,
+    pub message: String,
+}
+
+fn emit_progress(app: &AppHandle, id: &str, stage: &str, message: impl Into<String>) {
+    let _ = app.emit(
+        "ssh://progress",
+        ConnectProgress {
+            connect_id: id.to_string(),
+            stage: stage.to_string(),
+            message: message.into(),
+        },
+    );
+}
 
 /// 一个持久 SSH 会话。
 pub struct SessionEntry {
@@ -41,19 +74,66 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// 建连 + 密码认证，成功后登记一个新会话，返回其信息。
-    pub async fn connect(&self, p: &SshConnectParams) -> anyhow::Result<SessionInfo> {
-        let config = Arc::new(client::Config::default());
-        let mut handle = client::connect(config, (p.host.as_str(), p.port), ClientHandler).await?;
+    /// 全程向 `connect_id` 关联的 `ssh://progress` 事件推送阶段进度。
+    pub async fn connect(
+        &self,
+        p: &SshConnectParams,
+        app: &AppHandle,
+        connect_id: &str,
+    ) -> anyhow::Result<SessionInfo> {
+        // 1) 解析 + TCP 建连（带超时：不通就快速失败，不挂死）
+        emit_progress(app, connect_id, "resolve", format!("解析主机 {}", p.host));
+        let socket = match tokio::time::timeout(
+            TCP_TTL,
+            TcpStream::connect((p.host.as_str(), p.port)),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => anyhow::bail!("无法连接到 {}:{} — {e}", p.host, p.port),
+            Err(_) => {
+                anyhow::bail!(
+                    "连接超时：{}:{} 在 {} 秒内未响应",
+                    p.host,
+                    p.port,
+                    TCP_TTL.as_secs()
+                )
+            }
+        };
+        // 关闭 Nagle，交互式终端低延迟更重要
+        let _ = socket.set_nodelay(true);
 
-        let authed = handle
-            .authenticate_password(p.user.as_str(), p.password.as_str())
-            .await?;
+        // 2) SSH 握手（版本协商 + 密钥交换）
+        emit_progress(app, connect_id, "handshake", "协商加密通道");
+        let config = Arc::new(client::Config::default());
+        let mut handle = tokio::time::timeout(
+            HANDSHAKE_TTL,
+            client::connect_stream(config, socket, ClientHandler),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("SSH 握手超时（{} 秒）", HANDSHAKE_TTL.as_secs()))?
+        .map_err(|e| anyhow::anyhow!("SSH 握手失败：{e}"))?;
+
+        // 3) 密码认证
+        emit_progress(app, connect_id, "auth", format!("认证用户 {}", p.user));
+        let authed = match tokio::time::timeout(
+            AUTH_TTL,
+            handle.authenticate_password(p.user.as_str(), p.password.as_str()),
+        )
+        .await
+        {
+            Ok(Ok(a)) => a,
+            Ok(Err(e)) => anyhow::bail!("认证出错：{e}"),
+            Err(_) => anyhow::bail!("认证超时（{} 秒）", AUTH_TTL.as_secs()),
+        };
         if !authed.success() {
             let _ = handle
                 .disconnect(Disconnect::ByApplication, "auth failed", "en")
                 .await;
-            anyhow::bail!("authentication failed for '{}': {:?}", p.user, authed);
+            anyhow::bail!("认证失败：用户名或密码错误");
         }
+
+        emit_progress(app, connect_id, "ready", "已连接");
 
         let id = Uuid::new_v4().to_string();
         let info = SessionInfo {

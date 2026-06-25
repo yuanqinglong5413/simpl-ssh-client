@@ -1,11 +1,14 @@
+import { Folder, X } from "lucide-react";
 import type { SessionInfo } from "../types";
 
 type Props = {
   session: SessionInfo | null;
   tabCount: number;
+  onOpenSftp: () => void;
+  onDisconnect: () => void;
 };
 
-export function StatusBar({ session, tabCount }: Props) {
+export function StatusBar({ session, tabCount, onOpenSftp, onDisconnect }: Props) {
   return (
     <div className="statusbar">
       <div className="status-left">
@@ -15,10 +18,29 @@ export function StatusBar({ session, tabCount }: Props) {
             已连接 · {session.user}@{session.host}:{session.port}
           </span>
         ) : (
-          <span>就绪 · {tabCount} 个打开的终端</span>
+          <span>就绪 · {tabCount} 个打开的面板</span>
         )}
       </div>
       <div className="status-right">
+        {session && (
+          <>
+            <button
+              className="status-action"
+              onClick={onOpenSftp}
+              title="为当前会话打开文件面板"
+            >
+              <Folder size={13} /> 文件
+            </button>
+            <button
+              className="status-action danger"
+              onClick={onDisconnect}
+              title="断开当前会话"
+            >
+              <X size={13} /> 断开
+            </button>
+            <span className="status-sep" />
+          </>
+        )}
         <span className="badge">SSH</span>
         <span>simpl-ssh v0.1.0</span>
       </div>

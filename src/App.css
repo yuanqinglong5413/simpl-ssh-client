@@ -133,7 +133,7 @@ input {
 }
 
 .sidebar-label {
-  padding: 14px 16px 6px;
+  padding: 14px 9px 6px;
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -418,6 +418,33 @@ input {
   gap: 10px;
   color: var(--muted);
 }
+.status-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.status-action:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.status-action.danger:hover {
+  background: var(--red-soft);
+  color: var(--red);
+  border-color: rgba(255, 92, 92, 0.3);
+}
+.status-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 2px;
+}
 .pulse {
   width: 8px;
   height: 8px;
@@ -523,6 +550,20 @@ input {
 .field input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.check input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
 }
 .row-2 {
   display: grid;
@@ -709,4 +750,121 @@ input {
 .sftp-pct {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* ===========================  连接进度  ================================== */
+.conn-steps {
+  display: flex;
+  gap: 18px;
+  margin-top: 14px;
+}
+.conn-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--muted);
+  transition: color 0.15s;
+}
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.conn-step.active {
+  color: var(--accent);
+}
+.conn-step.active .conn-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.conn-step.done {
+  color: var(--green);
+}
+.conn-step.done .conn-dot {
+  background: var(--green);
+}
+.conn-spinner {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 连接弹窗内的进度视图 */
+.conn-view {
+  padding: 30px 16px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.conn-msg {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+/* 终端打开前的占位 */
+.term-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+  background: var(--bg);
+  z-index: 5;
+}
+.term-overlay .conn-spinner {
+  width: 20px;
+  height: 20px;
+}
+.term-overlay span {
+  font-size: 12.5px;
+}
+
+/* 侧栏一键连接的全局浮层 */
+.connecting {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 11, 0.62);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  z-index: 55;
+  animation: fade 0.14s ease;
+}
+.connecting-card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 26px 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  min-width: 280px;
+}
+.connecting-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-top: 4px;
+}
+.connecting-msg {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
 }

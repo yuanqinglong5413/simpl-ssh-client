@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -11,9 +11,11 @@ type Props = { sessionId: string };
  * 一个终端面板：xterm.js ↔ 本地 WebSocket ↔ 后端 PTY channel。
  * 面板常驻挂载（切换 Tab 时仅用 CSS 隐藏），保证后台终端会话不被打断。
  * 尺寸变化（包括从隐藏切到显示）由 ResizeObserver 触发 fit。
+ * PTY 就绪前显示"正在打开终端…"占位，避免一块空白让用户以为卡住。
  */
 export function TerminalPane({ sessionId }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -70,17 +72,21 @@ export function TerminalPane({ sessionId }: Props) {
         if (disposed) return;
         ws = new WebSocket(`ws://127.0.0.1:${handle.port}/`);
         ws.binaryType = "arraybuffer";
-        ws.onopen = () => ws?.send(handle.token);
+        ws.onopen = () => {
+          ws?.send(handle.token);
+          setReady(true);
+          term.focus();
+          fitAddon.fit();
+        };
         ws.onmessage = (e) =>
           term.write(
             e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data
           );
-        term.focus();
-        fitAddon.fit();
       })
-      .catch((e) =>
-        term.write(`\r\n\x1b[31m无法打开终端: ${e}\x1b[0m\r\n`)
-      );
+      .catch((e) => {
+        setReady(true);
+        term.write(`\r\n\x1b[31m无法打开终端: ${e}\x1b[0m\r\n`);
+      });
 
     return () => {
       disposed = true;
@@ -91,5 +97,14 @@ export function TerminalPane({ sessionId }: Props) {
     };
   }, [sessionId]);
 
-  return <div className="terminal-host" ref={hostRef} />;
+  return (
+    <div className="terminal-host" ref={hostRef}>
+      {!ready && (
+        <div className="term-overlay">
+          <div className="conn-spinner" />
+          <span>正在打开终端…</span>
+        </div>
+      )}
+    </div>
+  );
 }
