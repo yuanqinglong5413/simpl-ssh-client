@@ -1,0 +1,79 @@
+name: Release
+
+# 打 tag（v*）时自动在 macOS / Windows / Linux 三平台构建安装包，
+# 汇总到一个 GitHub Draft Release，手动核对后点 Publish 即可。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'simpl-ssh ${{ github.ref_name }}'
+          releaseBody: |
+            在下方 **Assets** 选择对应平台的安装包下载。
+            - macOS：`.dmg`（Apple Silicon 选 aarch64，Intel 选 x64）
+            - Windows：`-setup.exe` 或 `.msi`
+            - Linux：`.AppImage` 或 `.deb`
+
+            变更说明见 [CHANGELOG](https://github.com/yuanqinglong5413/simpl-ssh-client/blob/main/CHANGELOG.md)。
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

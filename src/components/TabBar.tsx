@@ -1,0 +1,47 @@
+import { Plus, Terminal, X } from "lucide-react";
+import type { Tab } from "../types";
+
+type Props = {
+  tabs: Tab[];
+  activeTabId: string | null;
+  onActivate: (id: string) => void;
+  onClose: (id: string) => void;
+  onNew: () => void;
+};
+
+export function TabBar({
+  tabs,
+  activeTabId,
+  onActivate,
+  onClose,
+  onNew,
+}: Props) {
+  return (
+    <div className="tabbar">
+      {tabs.map((t) => (
+        <div
+          key={t.id}
+          className={`tab ${t.id === activeTabId ? "active" : ""}`}
+          onClick={() => onActivate(t.id)}
+        >
+          <Terminal size={13} />
+          <span className="tab-name">{t.title}</span>
+          <button
+            className="tab-x"
+            aria-label="关闭标签"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose(t.id);
+            }}
+          >
+            <X size={13} />
+          </button>
+        </div>
+      ))}
+      <div className="tab-spacer" />
+      <button className="tab-new" onClick={onNew} title="新建连接">
+        <Plus size={16} />
+      </button>
+    </div>
+  );
+}
