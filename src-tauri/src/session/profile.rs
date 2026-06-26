@@ -118,11 +118,7 @@ impl ProfileStore {
     }
 
     /// 更新已有配置；密码 / passphrase 传空则保留钥匙串中的旧值。
-    pub async fn update(
-        &self,
-        id: &str,
-        input: ProfileInput,
-    ) -> Result<ConnectionProfile, String> {
+    pub async fn update(&self, id: &str, input: ProfileInput) -> Result<ConnectionProfile, String> {
         let mut guard = self.profiles.lock().await;
         let idx = guard
             .iter()
@@ -207,7 +203,10 @@ impl ProfileStore {
     }
 
     /// 将 profile 转为 SSH 连接参数（从钥匙串读凭据）。
-    pub async fn to_connect_params(&self, profile: &ConnectionProfile) -> Result<SshConnectParams, String> {
+    pub async fn to_connect_params(
+        &self,
+        profile: &ConnectionProfile,
+    ) -> Result<SshConnectParams, String> {
         let auth = match profile.auth_method {
             AuthMethod::Password => {
                 let pw = self.get_password(&profile.id).await?;
@@ -278,9 +277,9 @@ impl ProfileStore {
     ) -> Result<(), String> {
         match auth_method {
             AuthMethod::Password => {
-                let pw = password.filter(|s| !s.is_empty()).ok_or_else(|| {
-                    "密码认证需要填写密码".to_string()
-                })?;
+                let pw = password
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "密码认证需要填写密码".to_string())?;
                 self.set_password(id, &pw)?;
             }
             AuthMethod::PrivateKey => {

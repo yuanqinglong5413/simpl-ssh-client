@@ -28,12 +28,7 @@ pub struct SshConnectParams {
 
 impl SshConnectParams {
     /// 兼容旧接口：纯密码连接。
-    pub fn with_password(
-        host: String,
-        port: u16,
-        user: String,
-        password: String,
-    ) -> Self {
+    pub fn with_password(host: String, port: u16, user: String, password: String) -> Self {
         Self {
             host,
             port,
@@ -51,13 +46,12 @@ pub async fn authenticate(
     ttl: Duration,
 ) -> anyhow::Result<()> {
     let authed = match auth {
-        SshAuth::Password(pw) => tokio::time::timeout(
-            ttl,
-            handle.authenticate_password(user, pw.as_str()),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("认证超时（{} 秒）", ttl.as_secs()))?
-        .map_err(|e| anyhow::anyhow!("认证出错：{e}"))?,
+        SshAuth::Password(pw) => {
+            tokio::time::timeout(ttl, handle.authenticate_password(user, pw.as_str()))
+                .await
+                .map_err(|_| anyhow::anyhow!("认证超时（{} 秒）", ttl.as_secs()))?
+                .map_err(|e| anyhow::anyhow!("认证出错：{e}"))?
+        }
         SshAuth::PrivateKey { path, passphrase } => {
             let key = load_secret_key(path, passphrase.as_deref())
                 .map_err(|e| anyhow::anyhow!("无法读取私钥 {path}：{e}"))?;
@@ -67,13 +61,10 @@ pub async fn authenticate(
                 .map_err(|e| anyhow::anyhow!("协商 RSA 哈希算法失败：{e}"))?
                 .flatten();
             let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
-            tokio::time::timeout(
-                ttl,
-                handle.authenticate_publickey(user, key_with_alg),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("认证超时（{} 秒）", ttl.as_secs()))?
-            .map_err(|e| anyhow::anyhow!("认证出错：{e}"))?
+            tokio::time::timeout(ttl, handle.authenticate_publickey(user, key_with_alg))
+                .await
+                .map_err(|_| anyhow::anyhow!("认证超时（{} 秒）", ttl.as_secs()))?
+                .map_err(|e| anyhow::anyhow!("认证出错：{e}"))?
         }
     };
 

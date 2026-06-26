@@ -506,15 +506,15 @@ fn build_auth(
 ) -> Result<SshAuth, String> {
     match auth_method {
         "password" => {
-            let pw = password.filter(|s| !s.is_empty()).ok_or_else(|| {
-                "密码认证需要填写密码".to_string()
-            })?;
+            let pw = password
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "密码认证需要填写密码".to_string())?;
             Ok(SshAuth::Password(pw))
         }
         "private_key" => {
-            let path = private_key_path.filter(|s| !s.is_empty()).ok_or_else(|| {
-                "私钥认证需要选择私钥文件".to_string()
-            })?;
+            let path = private_key_path
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "私钥认证需要选择私钥文件".to_string())?;
             Ok(SshAuth::PrivateKey {
                 path,
                 passphrase: passphrase.filter(|s| !s.is_empty()),

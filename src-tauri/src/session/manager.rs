@@ -15,8 +15,8 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::forward::ForwardRegistry;
 use super::auth::SshConnectParams;
+use super::forward::ForwardRegistry;
 use super::{ClientHandler, HostKeyVerifier};
 
 /// TCP 建连（含 DNS 解析）超时。不通时快速失败，而不是任由系统 SYN 重传挂死。
