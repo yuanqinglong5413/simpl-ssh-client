@@ -9,6 +9,16 @@
 ### 计划中
 - 连接分组树、系统监控、跳板机
 
+## [0.3.1] - 2026-06-26
+
+### 变更
+- **macOS 安装说明**：未公证的 release 包会被 Gatekeeper 标「已损坏」，README 改为给出
+  `xattr -cr` 清隔离属性的实际有效处理（非真损坏）；Release 页也加了同样提示。
+- 路线图补 **macOS 公证（codesign + notarize）**。
+
+> ⚠️ 本版 mac 包仍未公证。首次打开若提示「已损坏」，终端执行
+> `xattr -cr "/Applications/Simpl SSH.app"` 后即可正常打开。
+
 ## [0.3.0] - 2026-06-26
 
 ### 新增
@@ -65,7 +75,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/releases/tag/v0.1.0
