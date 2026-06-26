@@ -80,6 +80,7 @@ export function Sidebar({
           <div className="session-title">{p.name}</div>
           <div className="session-sub">
             {p.auth_method === "private_key" ? "🔑 " : ""}
+            {p.jump_profile_id ? "↪ " : ""}
             {p.user}@{p.host}:{p.port}
           </div>
         </span>

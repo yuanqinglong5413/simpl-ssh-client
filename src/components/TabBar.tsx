@@ -1,4 +1,4 @@
-import { Folder, Plus, Terminal, X } from "lucide-react";
+import { Activity, Folder, Plus, Terminal, X } from "lucide-react";
 import type { Tab } from "../types";
 
 type Props = {
@@ -25,7 +25,13 @@ export function TabBar({
           onClick={() => onActivate(t.id)}
           title={t.title}
         >
-          {t.kind === "sftp" ? <Folder size={13} /> : <Terminal size={13} />}
+          {t.kind === "sftp" ? (
+            <Folder size={13} />
+          ) : t.kind === "monitor" ? (
+            <Activity size={13} />
+          ) : (
+            <Terminal size={13} />
+          )}
           <span className="tab-name">{t.title}</span>
           <button
             className="tab-x"

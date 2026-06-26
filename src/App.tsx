@@ -8,6 +8,7 @@ import { StatusBar } from "./components/StatusBar";
 import { ConnectDialog } from "./components/ConnectDialog";
 import { SplitView } from "./components/SplitView";
 import { SftpPane } from "./components/SftpPane";
+import { MonitorPane } from "./components/MonitorPane";
 import { ConnSteps } from "./components/ConnSteps";
 import { TransferPanel } from "./components/TransferPanel";
 import { ForwardPanel } from "./components/ForwardPanel";
@@ -182,6 +183,24 @@ function App() {
       sessionId: s.id,
       title: `${s.user}@${s.host} · 文件`,
       kind: "sftp",
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  function openMonitor(s: SessionInfo) {
+    const existing = tabs.find(
+      (t) => t.sessionId === s.id && t.kind === "monitor"
+    );
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const tab: Tab = {
+      id: crypto.randomUUID(),
+      sessionId: s.id,
+      title: `${s.user}@${s.host} · 监控`,
+      kind: "monitor",
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
@@ -459,6 +478,8 @@ function App() {
               >
                 {t.kind === "sftp" ? (
                   <SftpPane sessionId={t.sessionId} />
+                ) : t.kind === "monitor" ? (
+                  <MonitorPane sessionId={t.sessionId} />
                 ) : (
                   <SplitView
                     layout={t.layout!}
@@ -477,6 +498,7 @@ function App() {
           session={activeSession}
           tabCount={tabs.length}
           onOpenSftp={() => activeSession && openSftp(activeSession)}
+          onOpenMonitor={() => activeSession && openMonitor(activeSession)}
           onDisconnect={() => activeSession && disconnect(activeSession.id)}
           onOpenSettings={() => setShowSettings(true)}
         />
@@ -486,6 +508,7 @@ function App() {
         <ConnectDialog
           editProfile={editProfile ?? undefined}
           groups={groups}
+          profiles={profiles}
           onClose={() => {
             setShowConnect(false);
             setEditProfile(null);

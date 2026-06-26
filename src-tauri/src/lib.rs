@@ -26,6 +26,7 @@ pub fn run() {
         .manage(session::TransferQueue::default())
         .manage(session::PortForwardManager::default())
         .manage(session::HostKeyVerifier::default())
+        .manage(session::MonitorStore::default())
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
@@ -63,6 +64,7 @@ pub fn run() {
             commands::group_create,
             commands::group_rename,
             commands::group_delete,
+            commands::monitor_snapshot,
             commands::hostkey_trust,
             commands::hostkey_reject,
             commands::hostkey_remove,

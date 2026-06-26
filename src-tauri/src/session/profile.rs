@@ -41,6 +41,7 @@ pub struct ProfileInput {
     pub private_key_path: Option<String>,
     pub passphrase: Option<String>,
     pub group_id: Option<String>,
+    pub jump_profile_id: Option<String>,
 }
 
 /// 一个保存的连接配置（不含密码 / passphrase）。
@@ -58,6 +59,9 @@ pub struct ConnectionProfile {
     /// 所属分组 id；None 表示未分组。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
+    /// 跳板机：引用另一个已保存连接的 id（单跳 ProxyJump）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_profile_id: Option<String>,
 }
 
 /// 连接配置存储。作为 Tauri State 注入。
@@ -115,6 +119,7 @@ impl ProfileStore {
             auth_method: input.auth_method,
             private_key_path: input.private_key_path,
             group_id: input.group_id,
+            jump_profile_id: input.jump_profile_id,
         };
         let mut guard = self.profiles.lock().await;
         guard.push(profile.clone());
@@ -173,6 +178,10 @@ impl ProfileStore {
             return Err("私钥认证需要指定私钥路径".to_string());
         }
 
+        if input.jump_profile_id.as_deref() == Some(id) {
+            return Err("跳板机不能指向自身".to_string());
+        }
+
         guard[idx] = ConnectionProfile {
             id: id.to_string(),
             name: input.name,
@@ -182,6 +191,7 @@ impl ProfileStore {
             auth_method: input.auth_method,
             private_key_path: input.private_key_path,
             group_id: input.group_id,
+            jump_profile_id: input.jump_profile_id,
         };
         let updated = guard[idx].clone();
         self.persist(&guard)?;
@@ -224,15 +234,43 @@ impl ProfileStore {
         Ok(())
     }
 
-    /// 将 profile 转为 SSH 连接参数（从钥匙串读凭据）。
+    /// 删除跳板 profile 时，清除其他配置对它的引用。
+    pub async fn clear_jump_refs(&self, jump_id: &str) -> Result<(), String> {
+        let mut guard = self.profiles.lock().await;
+        let mut changed = false;
+        for p in guard.iter_mut() {
+            if p.jump_profile_id.as_deref() == Some(jump_id) {
+                p.jump_profile_id = None;
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist(&guard)?;
+        }
+        Ok(())
+    }
+
+    /// 将 profile 转为 SSH 连接参数（从钥匙串读凭据，解析跳板机）。
     pub async fn to_connect_params(
         &self,
         profile: &ConnectionProfile,
     ) -> Result<SshConnectParams, String> {
-        let auth = match profile.auth_method {
+        let auth = self.resolve_auth(profile).await?;
+        let jump = self.resolve_jump(profile).await?;
+        Ok(SshConnectParams {
+            host: profile.host.clone(),
+            port: profile.port,
+            user: profile.user.clone(),
+            auth,
+            jump,
+        })
+    }
+
+    async fn resolve_auth(&self, profile: &ConnectionProfile) -> Result<SshAuth, String> {
+        match profile.auth_method {
             AuthMethod::Password => {
                 let pw = self.get_password(&profile.id).await?;
-                SshAuth::Password(pw)
+                Ok(SshAuth::Password(pw))
             }
             AuthMethod::PrivateKey => {
                 let path = profile
@@ -241,15 +279,38 @@ impl ProfileStore {
                     .filter(|p| !p.is_empty())
                     .ok_or_else(|| "未配置私钥路径".to_string())?;
                 let passphrase = self.get_passphrase(&profile.id).await.ok();
-                SshAuth::PrivateKey { path, passphrase }
+                Ok(SshAuth::PrivateKey { path, passphrase })
             }
+        }
+    }
+
+    /// 解析跳板机 profile（仅单跳，禁止自引用与嵌套跳板）。
+    async fn resolve_jump(
+        &self,
+        profile: &ConnectionProfile,
+    ) -> Result<Option<Box<SshConnectParams>>, String> {
+        let jump_id = match profile.jump_profile_id.as_deref() {
+            Some(id) if !id.is_empty() => id,
+            _ => return Ok(None),
         };
-        Ok(SshConnectParams {
-            host: profile.host.clone(),
-            port: profile.port,
-            user: profile.user.clone(),
+        if jump_id == profile.id {
+            return Err("跳板机不能指向自身".to_string());
+        }
+        let jump_profile = self
+            .find(jump_id)
+            .await
+            .ok_or_else(|| format!("跳板机配置不存在: {jump_id}"))?;
+        if jump_profile.jump_profile_id.is_some() {
+            return Err("跳板机不支持嵌套，请选择单跳跳板".to_string());
+        }
+        let auth = self.resolve_auth(&jump_profile).await?;
+        Ok(Some(Box::new(SshConnectParams {
+            host: jump_profile.host.clone(),
+            port: jump_profile.port,
+            user: jump_profile.user.clone(),
             auth,
-        })
+            jump: None,
+        })))
     }
 
     /// 读取某配置的密码（内存缓存 → 钥匙串）。

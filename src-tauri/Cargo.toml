@@ -1,6 +1,6 @@
 [package]
 name = "simpl-ssh"
-version = "0.5.0"
+version = "0.6.0"
 description = "A lightweight Xshell + Xftp combined SSH client built with Rust + Tauri"
 authors = ["yuanqinglong5413"]
 license = "MIT"

@@ -14,8 +14,8 @@ use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
-    connect_and_exec, AuthMethod, HostKeyVerifier, SessionInfo, SessionManager, SshAuth,
-    SshConnectParams, TerminalBridge,
+    connect_and_exec, AuthMethod, HostKeyVerifier, MonitorSnapshot, MonitorStore, SessionInfo,
+    SessionManager, SshAuth, SshConnectParams, TerminalBridge,
 };
 
 // ==============================  SSH 会话  =================================
@@ -41,6 +41,7 @@ pub async fn ssh_exec(
 #[allow(clippy::too_many_arguments)]
 pub async fn ssh_connect(
     state: tauri::State<'_, SessionManager>,
+    profiles: tauri::State<'_, ProfileStore>,
     verifier: tauri::State<'_, HostKeyVerifier>,
     app: AppHandle,
     connect_id: String,
@@ -51,13 +52,16 @@ pub async fn ssh_connect(
     password: Option<String>,
     private_key_path: Option<String>,
     passphrase: Option<String>,
+    jump_profile_id: Option<String>,
 ) -> Result<SessionInfo, String> {
     let auth = build_auth(&auth_method, password, private_key_path, passphrase)?;
+    let jump = resolve_jump_profile(&profiles, jump_profile_id.as_deref(), None).await?;
     let params = SshConnectParams {
         host,
         port,
         user,
         auth,
+        jump,
     };
     state
         .connect(&params, &app, &connect_id, verifier.inner())
@@ -79,10 +83,12 @@ pub async fn ssh_disconnect(
     state: tauri::State<'_, SessionManager>,
     sftp: tauri::State<'_, SftpManager>,
     forwards: tauri::State<'_, PortForwardManager>,
+    monitor: tauri::State<'_, MonitorStore>,
     id: String,
 ) -> Result<(), String> {
     forwards.close_session(&id).await;
     sftp.close(&id).await;
+    monitor.clear_session(&id).await;
     state.disconnect(&id).await.map_err(|e| e.to_string())
 }
 
@@ -402,6 +408,7 @@ pub async fn profile_save(
     private_key_path: Option<String>,
     passphrase: Option<String>,
     group_id: Option<String>,
+    jump_profile_id: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -415,6 +422,7 @@ pub async fn profile_save(
             private_key_path,
             passphrase,
             group_id,
+            jump_profile_id,
         })
         .await
 }
@@ -434,6 +442,7 @@ pub async fn profile_update(
     private_key_path: Option<String>,
     passphrase: Option<String>,
     group_id: Option<String>,
+    jump_profile_id: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -449,6 +458,7 @@ pub async fn profile_update(
                 private_key_path,
                 passphrase,
                 group_id,
+                jump_profile_id,
             },
         )
         .await
@@ -471,6 +481,7 @@ pub async fn profile_delete(
     state: tauri::State<'_, ProfileStore>,
     id: String,
 ) -> Result<(), String> {
+    state.clear_jump_refs(&id).await?;
     state.delete(&id).await
 }
 
@@ -535,6 +546,18 @@ pub async fn group_delete(
     groups.delete(&id).await
 }
 
+// ==============================  系统监控  =================================
+
+/// 采集指定会话的远程系统指标快照（Linux /proc）。
+#[tauri::command]
+pub async fn monitor_snapshot(
+    sessions: tauri::State<'_, SessionManager>,
+    monitor: tauri::State<'_, MonitorStore>,
+    session_id: String,
+) -> Result<MonitorSnapshot, String> {
+    monitor.snapshot(sessions.inner(), &session_id).await
+}
+
 fn parse_auth_method(raw: &str) -> Result<AuthMethod, String> {
     match raw {
         "password" => Ok(AuthMethod::Password),
@@ -567,6 +590,50 @@ fn build_auth(
         }
         other => Err(format!("unknown auth_method: {other}")),
     }
+}
+
+/// 解析跳板机 profile id 为连接参数（新建连接弹窗用）。
+async fn resolve_jump_profile(
+    profiles: &ProfileStore,
+    jump_profile_id: Option<&str>,
+    self_id: Option<&str>,
+) -> Result<Option<Box<SshConnectParams>>, String> {
+    let jump_id = match jump_profile_id.filter(|s| !s.is_empty()) {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    if self_id == Some(jump_id) {
+        return Err("跳板机不能指向自身".to_string());
+    }
+    let jump_profile = profiles
+        .find(jump_id)
+        .await
+        .ok_or_else(|| format!("跳板机配置不存在: {jump_id}"))?;
+    if jump_profile.jump_profile_id.is_some() {
+        return Err("跳板机不支持嵌套，请选择单跳跳板".to_string());
+    }
+    let auth = match jump_profile.auth_method {
+        AuthMethod::Password => {
+            let pw = profiles.get_password(&jump_profile.id).await?;
+            SshAuth::Password(pw)
+        }
+        AuthMethod::PrivateKey => {
+            let path = jump_profile
+                .private_key_path
+                .clone()
+                .filter(|p| !p.is_empty())
+                .ok_or_else(|| "跳板机未配置私钥路径".to_string())?;
+            let passphrase = profiles.get_passphrase(&jump_profile.id).await.ok();
+            SshAuth::PrivateKey { path, passphrase }
+        }
+    };
+    Ok(Some(Box::new(SshConnectParams {
+        host: jump_profile.host,
+        port: jump_profile.port,
+        user: jump_profile.user,
+        auth,
+        jump: None,
+    })))
 }
 
 // ============================  主机公钥校验  ================================

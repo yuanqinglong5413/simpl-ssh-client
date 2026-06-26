@@ -24,6 +24,8 @@ type Props = {
   onProfileSaved?: () => void;
   /** 可选分组列表 */
   groups?: ProfileGroup[];
+  /** 全部已保存连接（用于选择跳板机） */
+  profiles?: ConnectionProfile[];
 };
 
 export function ConnectDialog({
@@ -32,6 +34,7 @@ export function ConnectDialog({
   editProfile,
   onProfileSaved,
   groups = [],
+  profiles = [],
 }: Props) {
   const isEdit = Boolean(editProfile);
 
@@ -48,6 +51,9 @@ export function ConnectDialog({
   );
   const [passphrase, setPassphrase] = useState("");
   const [groupId, setGroupId] = useState(editProfile?.group_id ?? "");
+  const [jumpProfileId, setJumpProfileId] = useState(
+    editProfile?.jump_profile_id ?? ""
+  );
   const [save, setSave] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -60,8 +66,11 @@ export function ConnectDialog({
   useEffect(() => {
     if (editProfile) {
       setGroupId(editProfile.group_id ?? "");
+      setJumpProfileId(editProfile.jump_profile_id ?? "");
     }
   }, [editProfile]);
+
+  const jumpCandidates = profiles.filter((p) => p.id !== editProfile?.id);
 
   useEffect(() => {
     if (!connectId) return;
@@ -125,6 +134,7 @@ export function ConnectDialog({
       privateKeyPath: privateKeyPath || null,
       passphrase: passphrase || null,
       groupId: groupId || null,
+      jumpProfileId: jumpProfileId || null,
     };
     if (isEdit && editProfile) {
       await invoke("profile_update", { id: editProfile.id, ...payload });
@@ -176,6 +186,7 @@ export function ConnectDialog({
         password: authMethod === "password" ? password : null,
         privateKeyPath: authMethod === "private_key" ? privateKeyPath : null,
         passphrase: authMethod === "private_key" ? passphrase || null : null,
+        jumpProfileId: jumpProfileId || null,
       });
       if (save) await saveProfileOnly();
       onConnected?.(s);
@@ -367,6 +378,23 @@ export function ConnectDialog({
                     {groups.map((g) => (
                       <option key={g.id} value={g.id}>
                         {g.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {jumpCandidates.length > 0 && (
+                <div className="field">
+                  <label>跳板机（ProxyJump）</label>
+                  <select
+                    value={jumpProfileId}
+                    onChange={(e) => setJumpProfileId(e.target.value)}
+                  >
+                    <option value="">直连（不经跳板）</option>
+                    {jumpCandidates.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.user}@{p.host}:{p.port})
                       </option>
                     ))}
                   </select>

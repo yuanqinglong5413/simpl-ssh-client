@@ -4,6 +4,8 @@ export type SessionInfo = {
   port: number;
   user: string;
   created_at: string;
+  /** 经跳板机连接时的跳板 host:port */
+  jump_via?: string | null;
 };
 
 export type AuthMethod = "password" | "private_key";
@@ -23,6 +25,8 @@ export type ConnectionProfile = {
   auth_method?: AuthMethod;
   private_key_path?: string | null;
   group_id?: string | null;
+  /** 跳板机：引用另一个已保存连接的 id */
+  jump_profile_id?: string | null;
 };
 
 /** 分屏方向：horizontal=左右切，vertical=上下切。 */
@@ -42,7 +46,7 @@ export type Tab = {
   id: string;
   sessionId: string;
   title: string;
-  kind: "terminal" | "sftp";
+  kind: "terminal" | "sftp" | "monitor";
   /** 仅 terminal Tab 用：终端分屏布局。 */
   layout?: SplitNode;
 };
@@ -100,4 +104,24 @@ export type HostKeyEvent = {
   algorithm: string;
   fingerprint: string;
   line: number | null;
+};
+
+export type DiskUsage = {
+  mount: string;
+  total_bytes: number;
+  used_bytes: number;
+  avail_bytes: number;
+};
+
+/** 远程系统监控快照 */
+export type MonitorSnapshot = {
+  cpu_percent: number;
+  mem_total_bytes: number;
+  mem_used_bytes: number;
+  mem_avail_bytes: number;
+  load_1: number;
+  load_5: number;
+  load_15: number;
+  uptime_secs: number;
+  disks: DiskUsage[];
 };
