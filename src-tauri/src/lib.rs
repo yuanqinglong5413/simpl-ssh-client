@@ -22,6 +22,7 @@ pub fn run() {
         .manage(session::SessionManager::default())
         .manage(session::SftpManager::default())
         .manage(session::ProfileStore::default())
+        .manage(session::GroupStore::default())
         .manage(session::TransferQueue::default())
         .manage(session::PortForwardManager::default())
         .manage(session::HostKeyVerifier::default())
@@ -58,6 +59,10 @@ pub fn run() {
             commands::profile_delete,
             commands::profile_connect,
             commands::profile_select_private_key,
+            commands::group_list,
+            commands::group_create,
+            commands::group_rename,
+            commands::group_delete,
             commands::hostkey_trust,
             commands::hostkey_reject,
             commands::hostkey_remove,

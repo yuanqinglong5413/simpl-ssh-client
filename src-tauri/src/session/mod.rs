@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod forward;
+pub mod groups;
 pub mod known_hosts;
 pub mod manager;
 pub mod profile;
@@ -20,6 +21,7 @@ pub mod transfer;
 
 pub use auth::{SshAuth, SshConnectParams};
 pub use forward::{ForwardRegistry, PortForwardManager};
+pub use groups::GroupStore;
 pub use known_hosts::{HostKeyCheck, HostKeyEvent, HostKeyVerifier};
 pub use manager::{SessionInfo, SessionManager};
 pub use profile::AuthMethod;

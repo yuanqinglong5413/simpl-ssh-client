@@ -8,6 +8,7 @@ use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::session::forward::{ForwardKind, PortForwardManager};
+use crate::session::groups::GroupStore;
 use crate::session::profile::{ProfileInput, ProfileStore};
 use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
@@ -400,6 +401,7 @@ pub async fn profile_save(
     password: Option<String>,
     private_key_path: Option<String>,
     passphrase: Option<String>,
+    group_id: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -412,6 +414,7 @@ pub async fn profile_save(
             password,
             private_key_path,
             passphrase,
+            group_id,
         })
         .await
 }
@@ -430,6 +433,7 @@ pub async fn profile_update(
     password: Option<String>,
     private_key_path: Option<String>,
     passphrase: Option<String>,
+    group_id: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -444,6 +448,7 @@ pub async fn profile_update(
                 password,
                 private_key_path,
                 passphrase,
+                group_id,
             },
         )
         .await
@@ -488,6 +493,46 @@ pub async fn profile_connect(
         .connect(&params, &app, &connect_id, verifier.inner())
         .await
         .map_err(|e| e.to_string())
+}
+
+// ==============================  连接分组  =================================
+
+/// 列出所有连接分组。
+#[tauri::command]
+pub async fn group_list(
+    state: tauri::State<'_, GroupStore>,
+) -> Result<Vec<crate::session::groups::ProfileGroup>, String> {
+    Ok(state.list().await)
+}
+
+/// 新建连接分组。
+#[tauri::command]
+pub async fn group_create(
+    state: tauri::State<'_, GroupStore>,
+    name: String,
+) -> Result<crate::session::groups::ProfileGroup, String> {
+    state.create(name).await
+}
+
+/// 重命名连接分组。
+#[tauri::command]
+pub async fn group_rename(
+    state: tauri::State<'_, GroupStore>,
+    id: String,
+    name: String,
+) -> Result<crate::session::groups::ProfileGroup, String> {
+    state.rename(&id, name).await
+}
+
+/// 删除连接分组（组内连接移至未分组）。
+#[tauri::command]
+pub async fn group_delete(
+    groups: tauri::State<'_, GroupStore>,
+    profiles: tauri::State<'_, ProfileStore>,
+    id: String,
+) -> Result<(), String> {
+    profiles.clear_group_refs(&id).await?;
+    groups.delete(&id).await
 }
 
 fn parse_auth_method(raw: &str) -> Result<AuthMethod, String> {

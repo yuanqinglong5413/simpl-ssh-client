@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal as TerminalIcon } from "lucide-react";
@@ -12,23 +12,51 @@ import { ConnSteps } from "./components/ConnSteps";
 import { TransferPanel } from "./components/TransferPanel";
 import { ForwardPanel } from "./components/ForwardPanel";
 import { HostKeyDialog } from "./components/HostKeyDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { useAppShortcuts } from "./hooks/useAppShortcuts";
+import { useSettings } from "./settings/SettingsProvider";
 import type {
   ConnectionProfile,
   HostKeyEvent,
+  ProfileGroup,
   SessionInfo,
   SplitNode,
   Tab,
 } from "./types";
 import "./App.css";
 
+type ToastKind = "error" | "info";
+
+/** 在分屏树中替换 sessionId（重连后新会话 id 不同）。 */
+function replaceSessionInLayout(
+  node: SplitNode,
+  oldId: string,
+  newId: string
+): SplitNode {
+  if (node.kind === "leaf") {
+    return node.sessionId === oldId ? { ...node, sessionId: newId } : node;
+  }
+  return {
+    ...node,
+    children: [
+      replaceSessionInLayout(node.children[0], oldId, newId),
+      replaceSessionInLayout(node.children[1], oldId, newId),
+    ],
+  };
+}
+
 function App() {
+  const { settings } = useSettings();
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
+  const [groups, setGroups] = useState<ProfileGroup[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [showConnect, setShowConnect] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [editProfile, setEditProfile] = useState<ConnectionProfile | null>(null);
   const [toast, setToast] = useState("");
+  const [toastKind, setToastKind] = useState<ToastKind>("error");
   const [connecting, setConnecting] = useState<{
     cid: string;
     name: string;
@@ -37,33 +65,52 @@ function App() {
   } | null>(null);
   const [hostKey, setHostKey] = useState<HostKeyEvent | null>(null);
   const [hostKeyBusy, setHostKeyBusy] = useState(false);
-  // 同步镜像，避免 ssh://hostkey 事件与 connect() reject 的竞态导致误弹错误 toast。
+
   const hostKeyRef = useRef<HostKeyEvent | null>(null);
-  // 当前 profile 连接的 cid（供事件匹配）与可重试的 profile id。
   const connectingCidRef = useRef<string | null>(null);
   const retryProfileIdRef = useRef<string | null>(null);
+  /** sessionId → profileId，仅 profile_connect 建立的会话可自动重连 */
+  const sessionProfileRef = useRef<Map<string, string>>(new Map());
+  /** 用户主动断开，避免触发自动重连 */
+  const intentionalDisconnectRef = useRef<Set<string>>(new Set());
+  /** 正在重连中的 session，防止分屏多 pane 重复触发 */
+  const reconnectingRef = useRef<Set<string>>(new Set());
+
+  const showToast = useCallback((msg: string, kind: ToastKind = "error") => {
+    setToastKind(kind);
+    setToast(msg);
+  }, []);
 
   const refreshSessions = async () => {
     try {
       setSessions(await invoke<SessionInfo[]>("ssh_list_sessions"));
     } catch (e) {
-      setToast(String(e));
+      showToast(String(e));
     }
   };
+
   const refreshProfiles = async () => {
     try {
       setProfiles(await invoke<ConnectionProfile[]>("profile_list"));
     } catch (e) {
-      setToast(String(e));
+      showToast(String(e));
+    }
+  };
+
+  const refreshGroups = async () => {
+    try {
+      setGroups(await invoke<ProfileGroup[]>("group_list"));
+    } catch (e) {
+      showToast(String(e));
     }
   };
 
   useEffect(() => {
     refreshSessions();
     refreshProfiles();
+    refreshGroups();
   }, []);
 
-  // 侧栏一键连接时，按 connectId 跟踪后端推送的阶段进度
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<{ connect_id: string; stage: string; message: string }>(
@@ -79,7 +126,6 @@ function App() {
     return () => unlisten?.();
   }, []);
 
-  // 主机公钥待确认（首次连接 / 公钥变更）：仅处理本应用发起的 profile 连接。
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<HostKeyEvent>("ssh://hostkey", (e) => {
@@ -90,6 +136,19 @@ function App() {
     }).then((fn) => (unlisten = fn));
     return () => unlisten?.();
   }, []);
+
+  function replaceSessionInTabs(oldSessionId: string, newSessionId: string) {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.sessionId !== oldSessionId) return t;
+        const next: Tab = { ...t, sessionId: newSessionId };
+        if (t.layout) {
+          next.layout = replaceSessionInLayout(t.layout, oldSessionId, newSessionId);
+        }
+        return next;
+      })
+    );
+  }
 
   function openTerminal(s: SessionInfo) {
     const existing = tabs.find((t) => t.sessionId === s.id && t.kind === "terminal");
@@ -139,6 +198,26 @@ function App() {
     );
   }
 
+  /** 切换到相邻 Tab（direction: 1=下一个，-1=上一个） */
+  const cycleTab = useCallback(
+    (direction: 1 | -1) => {
+      if (tabs.length === 0) return;
+      const idx = tabs.findIndex((t) => t.id === activeTabId);
+      const base = idx >= 0 ? idx : 0;
+      const next = (base + direction + tabs.length) % tabs.length;
+      setActiveTabId(tabs[next].id);
+    },
+    [activeTabId, tabs]
+  );
+
+  useAppShortcuts({
+    onNewConnection: () => setShowConnect(true),
+    onCloseTab: () => activeTabId && closeTab(activeTabId),
+    onNextTab: () => cycleTab(1),
+    onPrevTab: () => cycleTab(-1),
+    onOpenSettings: () => setShowSettings(true),
+  });
+
   async function connectProfile(id: string) {
     setToast("");
     const profile = profiles.find((p) => p.id === id);
@@ -152,6 +231,7 @@ function App() {
         id,
         connectId: cid,
       });
+      sessionProfileRef.current.set(s.id, id);
       await refreshSessions();
       setConnecting(null);
       connectingCidRef.current = null;
@@ -159,13 +239,83 @@ function App() {
     } catch (e) {
       setConnecting(null);
       connectingCidRef.current = null;
-      // 主机公钥待确认：事件已到，交给确认弹窗，不弹错误 toast。
       if (hostKeyRef.current?.connectId === cid) return;
-      setToast(String(e));
+      showToast(String(e));
     }
   }
 
-  // 用户在主机公钥弹窗点「信任」：落盘到 known_hosts 后以新 cid 重连。
+  /** 断线后按 profile 自动重连，指数退避重试 */
+  const attemptReconnect = useCallback(
+    async (oldSessionId: string, profileId: string, attempt: number) => {
+      const profile = profiles.find((p) => p.id === profileId);
+      const label = profile?.name ?? profile?.host ?? "服务器";
+      const max = settings.maxReconnectAttempts;
+
+      if (attempt >= max) {
+        reconnectingRef.current.delete(oldSessionId);
+        sessionProfileRef.current.delete(oldSessionId);
+        showToast(`「${label}」重连失败，已达最大次数 (${max})`, "error");
+        return;
+      }
+
+      showToast(
+        `「${label}」连接断开，重连中 (${attempt + 1}/${max})…`,
+        "info"
+      );
+
+      const delayMs = Math.min(1000 * 2 ** attempt, 8000);
+      await new Promise((r) => setTimeout(r, delayMs));
+
+      if (intentionalDisconnectRef.current.has(oldSessionId)) {
+        intentionalDisconnectRef.current.delete(oldSessionId);
+        reconnectingRef.current.delete(oldSessionId);
+        return;
+      }
+
+      try {
+        const cid = crypto.randomUUID();
+        const s = await invoke<SessionInfo>("profile_connect", {
+          id: profileId,
+          connectId: cid,
+        });
+        sessionProfileRef.current.delete(oldSessionId);
+        sessionProfileRef.current.set(s.id, profileId);
+        reconnectingRef.current.delete(oldSessionId);
+        replaceSessionInTabs(oldSessionId, s.id);
+        await refreshSessions();
+        showToast(`「${label}」已重新连接`, "info");
+      } catch {
+        if (hostKeyRef.current) {
+          reconnectingRef.current.delete(oldSessionId);
+          showToast(`「${label}」重连需确认主机公钥，请手动重连`, "error");
+          return;
+        }
+        void attemptReconnect(oldSessionId, profileId, attempt + 1);
+      }
+    },
+    [profiles, settings.maxReconnectAttempts, showToast]
+  );
+
+  const handleConnectionLost = useCallback(
+    (sessionId: string) => {
+      if (intentionalDisconnectRef.current.has(sessionId)) {
+        intentionalDisconnectRef.current.delete(sessionId);
+        return;
+      }
+      if (reconnectingRef.current.has(sessionId)) return;
+
+      const profileId = sessionProfileRef.current.get(sessionId);
+      if (!profileId || !settings.autoReconnect) {
+        showToast("SSH 连接已断开", "error");
+        return;
+      }
+
+      reconnectingRef.current.add(sessionId);
+      void attemptReconnect(sessionId, profileId, 0);
+    },
+    [attemptReconnect, settings.autoReconnect, showToast]
+  );
+
   async function handleHostKeyTrust() {
     if (!hostKey) return;
     setHostKeyBusy(true);
@@ -181,11 +331,10 @@ function App() {
       if (retryId) connectProfile(retryId);
     } catch (e) {
       setHostKeyBusy(false);
-      setToast(String(e));
+      showToast(String(e));
     }
   }
 
-  // 用户拒绝主机公钥：清缓存、断开本次连接尝试。
   async function handleHostKeyReject() {
     if (!hostKey) return;
     try {
@@ -200,7 +349,7 @@ function App() {
     hostKeyRef.current = null;
     setConnecting(null);
     connectingCidRef.current = null;
-    setToast("已拒绝主机公钥，未连接。");
+    showToast("已拒绝主机公钥，未连接。", "error");
   }
 
   async function deleteProfile(id: string) {
@@ -209,11 +358,42 @@ function App() {
       await invoke("profile_delete", { id });
       await refreshProfiles();
     } catch (e) {
-      setToast(String(e));
+      showToast(String(e));
+    }
+  }
+
+  async function createGroup(name: string) {
+    try {
+      await invoke("group_create", { name });
+      await refreshGroups();
+    } catch (e) {
+      showToast(String(e));
+    }
+  }
+
+  async function renameGroup(id: string, name: string) {
+    try {
+      await invoke("group_rename", { id, name });
+      await refreshGroups();
+    } catch (e) {
+      showToast(String(e));
+    }
+  }
+
+  async function deleteGroup(id: string) {
+    try {
+      await invoke("group_delete", { id });
+      await refreshGroups();
+      await refreshProfiles();
+    } catch (e) {
+      showToast(String(e));
     }
   }
 
   async function disconnect(id: string) {
+    intentionalDisconnectRef.current.add(id);
+    sessionProfileRef.current.delete(id);
+    reconnectingRef.current.delete(id);
     const wasActive = tabs.some((t) => t.id === activeTabId && t.sessionId === id);
     setTabs((prev) => prev.filter((t) => t.sessionId !== id));
     if (wasActive) setActiveTabId(null);
@@ -221,7 +401,7 @@ function App() {
       await invoke("ssh_disconnect", { id });
       await refreshSessions();
     } catch (e) {
-      setToast(String(e));
+      showToast(String(e));
     }
   }
 
@@ -241,9 +421,13 @@ function App() {
     <div className="app">
       <Sidebar
         profiles={profiles}
+        groups={groups}
         onConnectProfile={connectProfile}
         onEditProfile={setEditProfile}
         onDeleteProfile={deleteProfile}
+        onCreateGroup={createGroup}
+        onRenameGroup={renameGroup}
+        onDeleteGroup={deleteGroup}
         onNew={() => setShowConnect(true)}
       />
 
@@ -281,6 +465,7 @@ function App() {
                     sessionId={t.sessionId}
                     onChange={(n) => updateTabLayout(t.id, n)}
                     onCloseAll={() => closeTab(t.id)}
+                    onConnectionLost={handleConnectionLost}
                   />
                 )}
               </div>
@@ -293,20 +478,30 @@ function App() {
           tabCount={tabs.length}
           onOpenSftp={() => activeSession && openSftp(activeSession)}
           onDisconnect={() => activeSession && disconnect(activeSession.id)}
+          onOpenSettings={() => setShowSettings(true)}
         />
       </div>
 
       {(showConnect || editProfile) && (
         <ConnectDialog
           editProfile={editProfile ?? undefined}
+          groups={groups}
           onClose={() => {
             setShowConnect(false);
             setEditProfile(null);
           }}
           onConnected={onConnected}
-          onProfileSaved={refreshProfiles}
+          onProfileSaved={async () => {
+            await refreshProfiles();
+            await refreshGroups();
+          }}
         />
       )}
+
+      <SettingsDialog
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+      />
 
       {connecting && (
         <div className="connecting">
@@ -331,7 +526,14 @@ function App() {
         />
       )}
 
-      {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
+      {toast && (
+        <div
+          className={`toast ${toastKind === "info" ? "toast-info" : ""}`}
+          onClick={() => setToast("")}
+        >
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

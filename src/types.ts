@@ -8,6 +8,12 @@ export type SessionInfo = {
 
 export type AuthMethod = "password" | "private_key";
 
+export type ProfileGroup = {
+  id: string;
+  name: string;
+  order: number;
+};
+
 export type ConnectionProfile = {
   id: string;
   name: string;
@@ -16,6 +22,7 @@ export type ConnectionProfile = {
   user: string;
   auth_method?: AuthMethod;
   private_key_path?: string | null;
+  group_id?: string | null;
 };
 
 /** 分屏方向：horizontal=左右切，vertical=上下切。 */

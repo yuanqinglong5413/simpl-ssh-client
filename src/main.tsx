@@ -4,6 +4,7 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import App from "./App";
+import { SettingsProvider } from "./settings/SettingsProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
 
 // 注意：不使用 React.StrictMode —— 它在 dev 下会双次挂载 effect，导致终端
@@ -11,6 +12,8 @@ import { ThemeProvider } from "./theme/ThemeProvider";
 // 有副作用的组件需要稳定的单次生命周期。
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <ThemeProvider>
-    <App />
+    <SettingsProvider>
+      <App />
+    </SettingsProvider>
   </ThemeProvider>
 );
