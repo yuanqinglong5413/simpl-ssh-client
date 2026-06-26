@@ -59,7 +59,7 @@
 
 ## 🛠 从源码构建
 
-**前置要求**：[Node.js](https://nodejs.org/) ≥ 20、[pnpm](https://pnpm.io/) 11、[Rust](https://www.rust-lang.org/) (stable)。
+**前置要求**：[Node.js](https://nodejs.org/) ≥ 22（pnpm 11 需要）、[pnpm](https://pnpm.io/) 11、[Rust](https://www.rust-lang.org/) (stable)。
 
 ```bash
 git clone https://github.com/yuanqinglong5413/simpl-ssh-client.git
