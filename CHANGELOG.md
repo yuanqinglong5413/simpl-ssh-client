@@ -7,8 +7,23 @@
 ## [Unreleased]
 
 ### 计划中
-- 主机公钥校验（known_hosts）
 - 连接分组树、系统监控、跳板机
+
+## [0.3.0] - 2026-06-26
+
+### 新增
+- **主机公钥校验（known_hosts）**：连接时在 `~/.ssh/known_hosts` 中校验服务器公钥
+  （复用 russh 的 OpenSSH 兼容实现）。首次连接走 TOFU——弹窗展示算法与 `SHA256:...`
+  指纹供用户核对后显式信任；已记录主机的公钥变更会被拦截并警示（疑似中间人攻击），
+  需用户确认后才替换。写入格式与 `ssh` CLI 一致，已有 known_hosts 条目直接生效。
+  修复了此前 `check_server_key` 接受任意公钥的 MITM 风险。
+- **自定义应用图标**：深墨 + 琥珀的终端主题图标（`>` 提示符 + 光标块 + 交通灯圆点窗口），
+  替换默认 Tauri logo；源 SVG 留档 `src-tauri/app-icon.svg`，`tauri icon` 生成全套格式。
+
+### 修复
+- **发版流水线**：v0.2.0 三平台发版在 `Setup Node` 步全失败——`actions/setup-node@v4`
+  启用 pnpm 缓存时要求 `package.json` 声明 `packageManager`。补 `pnpm@11.9.0` 修复，
+  本地 release 构建（`.app` / `.dmg` 含新图标）验证通过。
 
 ## [0.2.0] - 2026-06-26
 
@@ -50,6 +65,7 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/releases/tag/v0.1.0
