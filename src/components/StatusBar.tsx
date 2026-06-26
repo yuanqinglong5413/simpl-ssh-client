@@ -70,7 +70,7 @@ export function StatusBar({
         <ThemePicker />
         <span className="status-sep" />
         <span className="badge">SSH</span>
-        <span>simpl-ssh v0.7.0</span>
+        <span>simpl-ssh v0.8.0</span>
       </div>
     </div>
   );
