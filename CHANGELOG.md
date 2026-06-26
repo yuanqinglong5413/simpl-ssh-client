@@ -7,7 +7,13 @@
 ## [Unreleased]
 
 ### 计划中
-- 系统监控、跳板机
+- X11 转发、目录同步、自动更新
+
+## [0.6.0] - 2026-06-26
+
+### 新增
+- **跳板机（ProxyJump）**：连接配置可指定单跳跳板机，经 direct-tcpip 隧道连接内网目标；状态栏展示跳板路径。
+- **系统监控面板**：复用已有 SSH 会话采集 Linux CPU/内存/负载/磁盘（/proc + df），2.5s 轮询，状态栏「监控」按钮打开。
 
 ## [0.5.0] - 2026-06-26
 
@@ -100,7 +106,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.1...v0.3.2

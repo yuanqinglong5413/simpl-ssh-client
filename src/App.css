@@ -1564,3 +1564,121 @@ input {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* ===========================  系统监控  ================================= */
+.monitor-pane {
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.monitor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.monitor-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.monitor-refresh {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.monitor-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-dim);
+  padding: 24px 0;
+}
+.monitor-error {
+  padding: 10px 12px;
+  background: var(--red-soft);
+  border: 1px solid rgba(255, 92, 92, 0.3);
+  border-radius: 7px;
+  color: var(--red);
+  font-size: 12.5px;
+}
+.monitor-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.monitor-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.monitor-metric-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.monitor-metric-val {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+.monitor-bar-track {
+  height: 8px;
+  background: var(--panel-3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.monitor-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--green));
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+.monitor-stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.monitor-stat {
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.monitor-stat-label {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.monitor-stat-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+}
+.monitor-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+.monitor-disks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.monitor-hint {
+  margin: auto 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}

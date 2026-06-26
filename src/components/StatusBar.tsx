@@ -1,4 +1,4 @@
-import { Folder, Settings, X } from "lucide-react";
+import { Folder, Activity, Settings, X } from "lucide-react";
 import type { SessionInfo } from "../types";
 import { ThemePicker } from "./ThemePicker";
 
@@ -6,6 +6,7 @@ type Props = {
   session: SessionInfo | null;
   tabCount: number;
   onOpenSftp: () => void;
+  onOpenMonitor: () => void;
   onDisconnect: () => void;
   onOpenSettings: () => void;
 };
@@ -14,6 +15,7 @@ export function StatusBar({
   session,
   tabCount,
   onOpenSftp,
+  onOpenMonitor,
   onDisconnect,
   onOpenSettings,
 }: Props) {
@@ -24,6 +26,7 @@ export function StatusBar({
         {session ? (
           <span>
             已连接 · {session.user}@{session.host}:{session.port}
+            {session.jump_via ? `（经 ${session.jump_via}）` : ""}
           </span>
         ) : (
           <span>就绪 · {tabCount} 个打开的面板</span>
@@ -32,6 +35,13 @@ export function StatusBar({
       <div className="status-right">
         {session && (
           <>
+            <button
+              className="status-action"
+              onClick={onOpenMonitor}
+              title="为当前会话打开系统监控"
+            >
+              <Activity size={13} /> 监控
+            </button>
             <button
               className="status-action"
               onClick={onOpenSftp}
@@ -60,7 +70,7 @@ export function StatusBar({
         <ThemePicker />
         <span className="status-sep" />
         <span className="badge">SSH</span>
-        <span>simpl-ssh v0.5.0</span>
+        <span>simpl-ssh v0.6.0</span>
       </div>
     </div>
   );

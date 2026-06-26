@@ -24,6 +24,8 @@ pub struct SshConnectParams {
     pub port: u16,
     pub user: String,
     pub auth: SshAuth,
+    /// 跳板机连接参数（单跳 ProxyJump）；建立目标连接前需先连跳板并开 direct-tcpip。
+    pub jump: Option<Box<SshConnectParams>>,
 }
 
 impl SshConnectParams {
@@ -34,6 +36,7 @@ impl SshConnectParams {
             port,
             user,
             auth: SshAuth::Password(password),
+            jump: None,
         }
     }
 }
