@@ -1,7 +1,7 @@
 {
   "name": "simpl-ssh-client",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "A lightweight Xshell + Xftp combined SSH client built with Rust + Tauri",
   "license": "MIT",
   "author": "yuanqinglong5413",
@@ -10,7 +10,14 @@
     "type": "git",
     "url": "https://github.com/yuanqinglong5413/simpl-ssh-client.git"
   },
-  "keywords": ["ssh", "sftp", "terminal", "tauri", "rust", "xterm"],
+  "keywords": [
+    "ssh",
+    "sftp",
+    "terminal",
+    "tauri",
+    "rust",
+    "xterm"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -24,6 +31,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "0.16.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "lucide-react": "^1.21.0",

@@ -1,4 +1,4 @@
-//! 一次性 exec demo：连接 -> 密码认证 -> 执行单条命令 -> 断开。
+//! 一次性 exec demo：连接 -> 认证 -> 执行单条命令 -> 断开。
 //!
 //! 早期的"打通链路"验收点。需要持久会话（终端/SFTP 复用连接）请用 `super::manager`。
 
@@ -7,36 +7,37 @@ use std::sync::Arc;
 use russh::client;
 use russh::{ChannelMsg, Disconnect};
 
+pub use super::auth::{authenticate, SshAuth, SshConnectParams};
 use super::ClientHandler;
 
-/// 一次 SSH 连接所需的最少参数。
-pub struct SshConnectParams {
-    pub host: String,
-    pub port: u16,
-    pub user: String,
-    pub password: String,
-}
-
-/// 连接到 `params` 指定的主机，密码认证后执行 `command`，返回合并后的 stdout+stderr。
+/// 连接到 `params` 指定的主机，认证后执行 `command`，返回合并后的 stdout+stderr。
 pub async fn connect_and_exec(params: &SshConnectParams, command: &str) -> anyhow::Result<String> {
+    let SshAuth::Password(ref password) = params.auth else {
+        anyhow::bail!("connect_and_exec 仅支持密码认证");
+    };
+    let demo_params = SshConnectParams::with_password(
+        params.host.clone(),
+        params.port,
+        params.user.clone(),
+        password.clone(),
+    );
+
     let config = Arc::new(client::Config::default());
 
     let mut handle = client::connect(
         config,
-        (params.host.as_str(), params.port),
-        ClientHandler::for_exec(params.host.clone(), params.port),
+        (demo_params.host.as_str(), demo_params.port),
+        ClientHandler::for_exec(demo_params.host.clone(), demo_params.port),
     )
     .await?;
 
-    let authed = handle
-        .authenticate_password(params.user.as_str(), params.password.as_str())
-        .await?;
-    if !authed.success() {
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, "auth failed", "en")
-            .await;
-        anyhow::bail!("authentication failed for '{}': {:?}", params.user, authed);
-    }
+    authenticate(
+        &mut handle,
+        demo_params.user.as_str(),
+        &demo_params.auth,
+        std::time::Duration::from_secs(12),
+    )
+    .await?;
 
     let mut channel = handle.channel_open_session().await?;
     channel.exec(true, command).await?;
