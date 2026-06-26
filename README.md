@@ -55,7 +55,11 @@
 | Windows | `*-setup.exe` / `*.msi` |
 | Linux | `*.AppImage` / `*.deb` |
 
-> macOS 首次打开若提示"无法验证开发者"，到 *系统设置 → 隐私与安全性* 里点"仍要打开"即可。
+> macOS：当前 release 未做 Apple 公证（unsigned）。下载后首次打开若提示「已损坏，无法打开」或「无法验证开发者」，在终端执行（按实际安装路径调整）清除隔离属性后即可：
+> ```bash
+> xattr -cr "/Applications/Simpl SSH.app"
+> ```
+> 这是 macOS Gatekeeper 拦截未签名 app 的常规处理，并非文件真的损坏。正式公证（codesign + notarize）在路线图中。
 
 ## 🛠 从源码构建
 
@@ -128,6 +132,7 @@ simpl-ssh-client/
 - [x] **SFTP 传输队列**（排队 / 取消 / 非阻塞）
 - [x] **端口转发**（本地 -L / 远程 -R / 动态 SOCKS5 -D）
 - [x] **主机公钥校验**（known_hosts：TOFU + 变更检测，兼容 OpenSSH）
+- [ ] macOS 公证（codesign + notarize，消除「已损坏」提示）
 - [ ] 连接分组树、系统监控、跳板机
 
 详见 [docs/DESIGN.md](docs/DESIGN.md)。
