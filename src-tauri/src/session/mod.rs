@@ -7,6 +7,7 @@
 //! - `socks`    SOCKS5 握手（-D 用）。
 
 pub mod forward;
+pub mod known_hosts;
 pub mod manager;
 pub mod profile;
 pub mod pty;
@@ -17,6 +18,7 @@ pub mod ssh;
 pub mod transfer;
 
 pub use forward::{ForwardRegistry, PortForwardManager};
+pub use known_hosts::{HostKeyCheck, HostKeyEvent, HostKeyVerifier};
 pub use manager::{SessionInfo, SessionManager};
 pub use profile::ProfileStore;
 pub use pty::TerminalBridge;
@@ -30,43 +32,114 @@ use std::sync::Arc;
 use russh::client;
 use russh::keys::ssh_key::PublicKey;
 use russh::ChannelMsg;
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 /// 共享的 russh 客户端 handler。终端、SFTP、一次性 exec、端口转发都复用它。
 ///
-/// ⚠️ 安全提示：`check_server_key` 当前一律返回 `Ok(true)`，即**接受任意主机公钥**，
-/// 仅用于本地 demo。正式实现必须在 `~/.ssh/known_hosts` 中校验，否则存在中间人攻击（MITM）风险。
+/// `check_server_key` 在 `~/.ssh/known_hosts` 中校验服务器公钥（复用 russh 的 OpenSSH 兼容实现）：
+/// - 已记录且匹配 → 放行；
+/// - 未知（首次连接）或已变更（疑似 MITM）→ 把公钥暂存进 [`HostKeyVerifier`] 并推 `ssh://hostkey`
+///   事件让前端确认，同时返回 `Ok(false)` 让握手中止（russh 返回 `UnknownKey`）。
+///   用户在前端确认后调 `hostkey_trust` 落盘，再重连即命中。详见 [`known_hosts`]。
 pub(crate) struct ClientHandler {
     /// `-R` 远程转发注册表：服务器在远端端口收到连接时，回调据此把进来的 channel 桥到本地目标。
     pub(crate) forward_registry: ForwardRegistry,
+    /// known_hosts 校验用的主机 / 端口。
+    host: String,
+    port: u16,
+    /// `None` = 非交互（一次性 exec demo）：未知主机静默 TOFU、公钥变更则拒绝。
+    /// `Some` = 交互式（持久会话）：未知 / 变更都暂存公钥并推前端确认。
+    verify: Option<VerifyCtx>,
+}
+
+/// 交互式校验上下文（持久会话用）。
+pub(crate) struct VerifyCtx {
+    app: AppHandle,
+    connect_id: String,
+    verifier: HostKeyVerifier,
 }
 
 impl ClientHandler {
-    /// 空 registry（一次性连接 / 不用 -R 的场景）。
-    pub(crate) fn new() -> Self {
+    /// 一次性 exec demo 用：非交互，无前端确认通道（未知静默 TOFU、变更拒绝）。
+    pub(crate) fn for_exec(host: String, port: u16) -> Self {
         Self {
             forward_registry: Arc::new(Mutex::new(HashMap::new())),
+            host,
+            port,
+            verify: None,
         }
     }
-}
 
-impl Default for ClientHandler {
-    fn default() -> Self {
-        Self::new()
+    /// 持久会话用：交互式校验，未知 / 变更推前端确认。
+    pub(crate) fn for_session(
+        host: String,
+        port: u16,
+        app: AppHandle,
+        connect_id: String,
+        verifier: HostKeyVerifier,
+        forward_registry: ForwardRegistry,
+    ) -> Self {
+        Self {
+            forward_registry,
+            host,
+            port,
+            verify: Some(VerifyCtx {
+                app,
+                connect_id,
+                verifier,
+            }),
+        }
     }
 }
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
-        &mut self,
-        _server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
-        // TODO: 校验 known_hosts；未知主机时回调前端让用户确认。
-        Ok(true)
+    async fn check_server_key(&mut self, key: &PublicKey) -> Result<bool, Self::Error> {
+        let algorithm = key.algorithm().to_string();
+        let fingerprint = known_hosts::fingerprint(key);
+        match known_hosts::check(&self.host, self.port, key) {
+            HostKeyCheck::Trusted => Ok(true),
+            kind => match &self.verify {
+                // 非交互（demo）：未知 → 静默 TOFU 落盘；变更 → 拒绝。
+                None => {
+                    if matches!(kind, HostKeyCheck::Unknown) {
+                        let host = self.host.clone();
+                        let port = self.port;
+                        let key = key.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            russh::keys::known_hosts::learn_known_hosts(&host, port, &key)
+                        })
+                        .await;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                }
+                // 交互式：暂存公钥 + 推事件，握手中止，等前端确认后重连。
+                Some(vx) => {
+                    vx.verifier
+                        .stage(self.host.clone(), self.port, key.clone())
+                        .await;
+                    let _ = vx.app.emit(
+                        "ssh://hostkey",
+                        HostKeyEvent {
+                            connect_id: vx.connect_id.clone(),
+                            kind: kind.as_str().to_string(),
+                            host: self.host.clone(),
+                            port: self.port,
+                            algorithm,
+                            fingerprint,
+                            line: None,
+                        },
+                    );
+                    Ok(false)
+                }
+            },
+        }
     }
 
     /// `-R` 远程转发：服务器在远端端口收到连接时回调。回调查 registry 拿本地目标，

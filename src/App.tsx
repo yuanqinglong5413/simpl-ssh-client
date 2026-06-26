@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal as TerminalIcon } from "lucide-react";
@@ -11,7 +11,14 @@ import { SftpPane } from "./components/SftpPane";
 import { ConnSteps } from "./components/ConnSteps";
 import { TransferPanel } from "./components/TransferPanel";
 import { ForwardPanel } from "./components/ForwardPanel";
-import type { ConnectionProfile, SessionInfo, SplitNode, Tab } from "./types";
+import { HostKeyDialog } from "./components/HostKeyDialog";
+import type {
+  ConnectionProfile,
+  HostKeyEvent,
+  SessionInfo,
+  SplitNode,
+  Tab,
+} from "./types";
 import "./App.css";
 
 function App() {
@@ -27,6 +34,13 @@ function App() {
     stage: string;
     message: string;
   } | null>(null);
+  const [hostKey, setHostKey] = useState<HostKeyEvent | null>(null);
+  const [hostKeyBusy, setHostKeyBusy] = useState(false);
+  // 同步镜像，避免 ssh://hostkey 事件与 connect() reject 的竞态导致误弹错误 toast。
+  const hostKeyRef = useRef<HostKeyEvent | null>(null);
+  // 当前 profile 连接的 cid（供事件匹配）与可重试的 profile id。
+  const connectingCidRef = useRef<string | null>(null);
+  const retryProfileIdRef = useRef<string | null>(null);
 
   const refreshSessions = async () => {
     try {
@@ -61,6 +75,18 @@ function App() {
         );
       }
     ).then((fn) => (unlisten = fn));
+    return () => unlisten?.();
+  }, []);
+
+  // 主机公钥待确认（首次连接 / 公钥变更）：仅处理本应用发起的 profile 连接。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<HostKeyEvent>("ssh://hostkey", (e) => {
+      if (e.payload.connectId === connectingCidRef.current) {
+        hostKeyRef.current = e.payload;
+        setHostKey(e.payload);
+      }
+    }).then((fn) => (unlisten = fn));
     return () => unlisten?.();
   }, []);
 
@@ -117,6 +143,8 @@ function App() {
     const profile = profiles.find((p) => p.id === id);
     const name = profile?.name ?? "服务器";
     const cid = crypto.randomUUID();
+    connectingCidRef.current = cid;
+    retryProfileIdRef.current = id;
     setConnecting({ cid, name, stage: "resolve", message: "开始连接…" });
     try {
       const s = await invoke<SessionInfo>("profile_connect", {
@@ -125,11 +153,53 @@ function App() {
       });
       await refreshSessions();
       setConnecting(null);
+      connectingCidRef.current = null;
       openTerminal(s);
     } catch (e) {
       setConnecting(null);
+      connectingCidRef.current = null;
+      // 主机公钥待确认：事件已到，交给确认弹窗，不弹错误 toast。
+      if (hostKeyRef.current?.connectId === cid) return;
       setToast(String(e));
     }
+  }
+
+  // 用户在主机公钥弹窗点「信任」：落盘到 known_hosts 后以新 cid 重连。
+  async function handleHostKeyTrust() {
+    if (!hostKey) return;
+    setHostKeyBusy(true);
+    try {
+      await invoke("hostkey_trust", {
+        host: hostKey.host,
+        port: hostKey.port,
+      });
+      const retryId = retryProfileIdRef.current;
+      setHostKey(null);
+      hostKeyRef.current = null;
+      setHostKeyBusy(false);
+      if (retryId) connectProfile(retryId);
+    } catch (e) {
+      setHostKeyBusy(false);
+      setToast(String(e));
+    }
+  }
+
+  // 用户拒绝主机公钥：清缓存、断开本次连接尝试。
+  async function handleHostKeyReject() {
+    if (!hostKey) return;
+    try {
+      await invoke("hostkey_reject", {
+        host: hostKey.host,
+        port: hostKey.port,
+      });
+    } catch {
+      /* 忽略 */
+    }
+    setHostKey(null);
+    hostKeyRef.current = null;
+    setConnecting(null);
+    connectingCidRef.current = null;
+    setToast("已拒绝主机公钥，未连接。");
   }
 
   async function deleteProfile(id: string) {
@@ -244,6 +314,15 @@ function App() {
 
       <TransferPanel />
       <ForwardPanel />
+
+      {hostKey && (
+        <HostKeyDialog
+          data={hostKey}
+          busy={hostKeyBusy}
+          onTrust={handleHostKeyTrust}
+          onReject={handleHostKeyReject}
+        />
+      )}
 
       {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
     </div>

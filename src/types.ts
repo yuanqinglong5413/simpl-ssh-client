@@ -76,3 +76,17 @@ export type ForwardEntry = {
   boundPort: number;
   state: string;
 };
+
+/** 主机公钥校验结果：unknown=首次连接，changed=公钥已变更（疑似 MITM）。 */
+export type HostKeyKind = "unknown" | "changed";
+
+/** 后端推送的待确认主机公钥（ssh://hostkey 事件载荷）。 */
+export type HostKeyEvent = {
+  connectId: string;
+  kind: HostKeyKind;
+  host: string;
+  port: number;
+  algorithm: string;
+  fingerprint: string;
+  line: number | null;
+};

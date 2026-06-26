@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::forward::ForwardRegistry;
 use super::ssh::SshConnectParams;
-use super::ClientHandler;
+use super::{ClientHandler, HostKeyVerifier};
 
 /// TCP 建连（含 DNS 解析）超时。不通时快速失败，而不是任由系统 SYN 重传挂死。
 const TCP_TTL: Duration = Duration::from_secs(12);
@@ -78,6 +78,7 @@ impl SessionManager {
         p: &SshConnectParams,
         app: &AppHandle,
         connect_id: &str,
+        verifier: &HostKeyVerifier,
     ) -> anyhow::Result<SessionInfo> {
         // 1) 解析 + TCP 建连（带超时：不通就快速失败，不挂死）
         emit_progress(app, connect_id, "resolve", format!("解析主机 {}", p.host));
@@ -105,16 +106,28 @@ impl SessionManager {
         emit_progress(app, connect_id, "handshake", "协商加密通道");
         let config = Arc::new(client::Config::default());
         let forward_registry: ForwardRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let handler = ClientHandler {
-            forward_registry: forward_registry.clone(),
-        };
+        let handler = ClientHandler::for_session(
+            p.host.clone(),
+            p.port,
+            app.clone(),
+            connect_id.to_string(),
+            verifier.clone(),
+            forward_registry.clone(),
+        );
         let mut handle = tokio::time::timeout(
             HANDSHAKE_TTL,
             client::connect_stream(config, socket, handler),
         )
         .await
         .map_err(|_| anyhow::anyhow!("SSH 握手超时（{} 秒）", HANDSHAKE_TTL.as_secs()))?
-        .map_err(|e| anyhow::anyhow!("SSH 握手失败：{e}"))?;
+        .map_err(|e| match e {
+            // check_server_key 拒绝（未知 / 变更）：前端已收到 ssh://hostkey 事件，
+            // 这里返回可识别文案兜底（前端会优先按事件走确认弹窗）。
+            russh::Error::UnknownKey => {
+                anyhow::anyhow!("主机公钥未通过校验（未知或已变更），请在前端确认")
+            }
+            other => anyhow::anyhow!("SSH 握手失败：{other}"),
+        })?;
 
         // 3) 密码认证
         emit_progress(app, connect_id, "auth", format!("认证用户 {}", p.user));

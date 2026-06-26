@@ -24,7 +24,7 @@ pub async fn connect_and_exec(params: &SshConnectParams, command: &str) -> anyho
     let mut handle = client::connect(
         config,
         (params.host.as_str(), params.port),
-        ClientHandler::new(),
+        ClientHandler::for_exec(params.host.clone(), params.port),
     )
     .await?;
 

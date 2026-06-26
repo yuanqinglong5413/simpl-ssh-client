@@ -24,6 +24,7 @@ pub fn run() {
         .manage(session::ProfileStore::default())
         .manage(session::TransferQueue::default())
         .manage(session::PortForwardManager::default())
+        .manage(session::HostKeyVerifier::default())
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
@@ -55,6 +56,9 @@ pub fn run() {
             commands::profile_save,
             commands::profile_delete,
             commands::profile_connect,
+            commands::hostkey_trust,
+            commands::hostkey_reject,
+            commands::hostkey_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -13,7 +13,8 @@ use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
-    connect_and_exec, SessionInfo, SessionManager, SshConnectParams, TerminalBridge,
+    connect_and_exec, HostKeyVerifier, SessionInfo, SessionManager, SshConnectParams,
+    TerminalBridge,
 };
 
 // ==============================  SSH 会话  =================================
@@ -41,8 +42,10 @@ pub async fn ssh_exec(
 /// 建立持久会话（连接 + 密码认证），返回会话信息。终端 / SFTP 复用此会话。
 /// `connect_id` 用于关联 `ssh://progress` 阶段事件，前端据此展示连接进度。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ssh_connect(
     state: tauri::State<'_, SessionManager>,
+    verifier: tauri::State<'_, HostKeyVerifier>,
     app: AppHandle,
     connect_id: String,
     host: String,
@@ -57,7 +60,7 @@ pub async fn ssh_connect(
         password,
     };
     state
-        .connect(&params, &app, &connect_id)
+        .connect(&params, &app, &connect_id, verifier.inner())
         .await
         .map_err(|e| e.to_string())
 }
@@ -407,6 +410,7 @@ pub async fn profile_delete(
 pub async fn profile_connect(
     state: tauri::State<'_, ProfileStore>,
     sessions: tauri::State<'_, SessionManager>,
+    verifier: tauri::State<'_, HostKeyVerifier>,
     app: AppHandle,
     connect_id: String,
     id: String,
@@ -423,7 +427,41 @@ pub async fn profile_connect(
         password,
     };
     sessions
-        .connect(&params, &app, &connect_id)
+        .connect(&params, &app, &connect_id, verifier.inner())
         .await
         .map_err(|e| e.to_string())
+}
+
+// ============================  主机公钥校验  ================================
+
+/// 信任一个待确认的主机公钥：剔除同算法的旧冲突记录后，以 OpenSSH 格式追加到
+/// `~/.ssh/known_hosts`。前端在 `ssh://hostkey` 弹窗里点「信任」后调用，随后重连。
+#[tauri::command]
+pub async fn hostkey_trust(
+    verifier: tauri::State<'_, HostKeyVerifier>,
+    host: String,
+    port: u16,
+) -> Result<(), String> {
+    verifier.trust(&host, port).await
+}
+
+/// 拒绝一个待确认的主机公钥：仅清进程内存里的暂存，不改动 `known_hosts`。
+#[tauri::command]
+pub async fn hostkey_reject(
+    verifier: tauri::State<'_, HostKeyVerifier>,
+    host: String,
+    port: u16,
+) -> Result<(), String> {
+    verifier.reject(&host, port).await;
+    Ok(())
+}
+
+/// 删除一个已知主机的全部 known_hosts 记录（供后续「已知主机」管理面板）。
+#[tauri::command]
+pub async fn hostkey_remove(
+    verifier: tauri::State<'_, HostKeyVerifier>,
+    host: String,
+    port: u16,
+) -> Result<(), String> {
+    verifier.remove_host(&host, port).await
 }
