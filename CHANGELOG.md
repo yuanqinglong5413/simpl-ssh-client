@@ -9,6 +9,15 @@
 ### 计划中
 - 连接分组树、系统监控、跳板机
 
+## [0.3.2] - 2026-06-26
+
+### 新增
+- **主题系统（21 套）**：GUI 界面与 SSH 终端配色联动，涵盖 Dracula、Nord、Tokyo Night、
+  Catppuccin、Solarized 等经典方案；状态栏「主题」按钮切换，选择持久化至 localStorage。
+- **终端完整 ANSI 16 色调色板**：`ls --color`、`grep --color` 等远端彩色输出正常显示。
+- **纯文本日志语法高亮**：`cat`/`tail` 无 ANSI 的日志按 ERROR/WARN/INFO/DEBUG 级别、
+  时间戳、HTTP 状态码自动着色，解决日志全文同一颜色的问题。
+
 ## [0.3.1] - 2026-06-26
 
 ### 变更
@@ -75,7 +84,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.1.0...v0.2.0

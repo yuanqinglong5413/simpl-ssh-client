@@ -45,7 +45,7 @@ export function StatusBar({ session, tabCount, onOpenSftp, onDisconnect }: Props
         <ThemePicker />
         <span className="status-sep" />
         <span className="badge">SSH</span>
-        <span>simpl-ssh v0.1.0</span>
+        <span>simpl-ssh v0.3.2</span>
       </div>
     </div>
   );
