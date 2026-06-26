@@ -1,5 +1,6 @@
 import { Folder, X } from "lucide-react";
 import type { SessionInfo } from "../types";
+import { ThemePicker } from "./ThemePicker";
 
 type Props = {
   session: SessionInfo | null;
@@ -41,6 +42,8 @@ export function StatusBar({ session, tabCount, onOpenSftp, onDisconnect }: Props
             <span className="status-sep" />
           </>
         )}
+        <ThemePicker />
+        <span className="status-sep" />
         <span className="badge">SSH</span>
         <span>simpl-ssh v0.1.0</span>
       </div>
