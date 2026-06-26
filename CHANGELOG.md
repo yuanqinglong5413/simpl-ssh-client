@@ -7,7 +7,15 @@
 ## [Unreleased]
 
 ### 计划中
-- 连接分组树、系统监控、跳板机
+- 系统监控、跳板机
+
+## [0.5.0] - 2026-06-26
+
+### 新增
+- **连接分组树**：侧栏按分组折叠展示已保存连接，支持新建/重命名/删除分组；编辑连接时可指定分组。
+- **断线自动重连**：通过已保存连接建立的会话断线后自动重试（可配置次数），toast 通知重连进度。
+- **全局快捷键**：Ctrl+N 新建连接、Ctrl+W 关闭 Tab、Ctrl+Tab 切换 Tab、Ctrl+, 打开设置。
+- **设置面板**：终端字体/字号/行高/光标样式、断线重连策略，持久化至 localStorage。
 
 ## [0.4.0] - 2026-06-26
 
@@ -92,7 +100,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.0...v0.3.1

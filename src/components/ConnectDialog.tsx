@@ -2,7 +2,13 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { FolderKey, Key, Plug, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AuthMethod, ConnectionProfile, HostKeyEvent, SessionInfo } from "../types";
+import type {
+  AuthMethod,
+  ConnectionProfile,
+  HostKeyEvent,
+  ProfileGroup,
+  SessionInfo,
+} from "../types";
 import { ConnSteps } from "./ConnSteps";
 import { HostKeyDialog } from "./HostKeyDialog";
 
@@ -16,6 +22,8 @@ type Props = {
   editProfile?: ConnectionProfile;
   /** 保存 / 更新配置后刷新列表 */
   onProfileSaved?: () => void;
+  /** 可选分组列表 */
+  groups?: ProfileGroup[];
 };
 
 export function ConnectDialog({
@@ -23,6 +31,7 @@ export function ConnectDialog({
   onConnected,
   editProfile,
   onProfileSaved,
+  groups = [],
 }: Props) {
   const isEdit = Boolean(editProfile);
 
@@ -38,6 +47,7 @@ export function ConnectDialog({
     editProfile?.private_key_path ?? ""
   );
   const [passphrase, setPassphrase] = useState("");
+  const [groupId, setGroupId] = useState(editProfile?.group_id ?? "");
   const [save, setSave] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -46,6 +56,12 @@ export function ConnectDialog({
   const [hostKey, setHostKey] = useState<HostKeyEvent | null>(null);
   const [hostKeyBusy, setHostKeyBusy] = useState(false);
   const hostKeyRef = useRef<HostKeyEvent | null>(null);
+
+  useEffect(() => {
+    if (editProfile) {
+      setGroupId(editProfile.group_id ?? "");
+    }
+  }, [editProfile]);
 
   useEffect(() => {
     if (!connectId) return;
@@ -108,6 +124,7 @@ export function ConnectDialog({
       password: password || null,
       privateKeyPath: privateKeyPath || null,
       passphrase: passphrase || null,
+      groupId: groupId || null,
     };
     if (isEdit && editProfile) {
       await invoke("profile_update", { id: editProfile.id, ...payload });
@@ -338,6 +355,23 @@ export function ConnectDialog({
                   required={isEdit}
                 />
               </div>
+
+              {(isEdit || save) && groups.length > 0 && (
+                <div className="field">
+                  <label>分组</label>
+                  <select
+                    value={groupId}
+                    onChange={(e) => setGroupId(e.target.value)}
+                  >
+                    <option value="">未分组</option>
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {!isEdit && (
                 <label className="check">

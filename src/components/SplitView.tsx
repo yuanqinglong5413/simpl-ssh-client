@@ -10,17 +10,26 @@ type Props = {
   onChange: (next: SplitNode) => void;
   /** 根叶子被关闭（整个 Tab 没有面板了）→ 关闭 Tab。 */
   onCloseAll: () => void;
+  /** 终端 WebSocket 断开 */
+  onConnectionLost?: (sessionId: string) => void;
 };
 
 /**
  * 终端分屏容器：递归渲染 SplitNode 树。
  * 叶子可水平/垂直分屏（替换为 split 节点）、可关闭（父 split 坍缩成兄弟）。
  */
-export function SplitView({ layout, sessionId, onChange, onCloseAll }: Props) {
+export function SplitView({
+  layout,
+  sessionId,
+  onChange,
+  onCloseAll,
+  onConnectionLost,
+}: Props) {
   return (
     <NodeView
       node={layout}
       sessionId={sessionId}
+      onConnectionLost={onConnectionLost}
       onReplace={(n) => {
         if (n === null) onCloseAll();
         else onChange(n);
@@ -36,10 +45,12 @@ function NodeView({
   node,
   sessionId,
   onReplace,
+  onConnectionLost,
 }: {
   node: SplitNode;
   sessionId: string;
   onReplace: Replace;
+  onConnectionLost?: (sessionId: string) => void;
 }) {
   if (node.kind === "leaf") {
     const split = (dir: SplitDir) =>
@@ -54,7 +65,11 @@ function NodeView({
       });
     return (
       <div className="split-leaf">
-        <TerminalPane sessionId={node.sessionId} paneId={node.paneId} />
+        <TerminalPane
+          sessionId={node.sessionId}
+          paneId={node.paneId}
+          onConnectionLost={onConnectionLost}
+        />
         <div className="pane-actions">
           <button title="左右分屏" onClick={() => split("horizontal")}>
             <Columns size={14} />
@@ -118,6 +133,7 @@ function NodeView({
         <NodeView
           node={children[0]}
           sessionId={sessionId}
+          onConnectionLost={onConnectionLost}
           onReplace={(n) => replaceChild(0, n)}
         />
       </div>
@@ -126,6 +142,7 @@ function NodeView({
         <NodeView
           node={children[1]}
           sessionId={sessionId}
+          onConnectionLost={onConnectionLost}
           onReplace={(n) => replaceChild(1, n)}
         />
       </div>

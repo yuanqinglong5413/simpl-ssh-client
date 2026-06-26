@@ -40,6 +40,7 @@ pub struct ProfileInput {
     pub password: Option<String>,
     pub private_key_path: Option<String>,
     pub passphrase: Option<String>,
+    pub group_id: Option<String>,
 }
 
 /// 一个保存的连接配置（不含密码 / passphrase）。
@@ -54,6 +55,9 @@ pub struct ConnectionProfile {
     pub auth_method: AuthMethod,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_key_path: Option<String>,
+    /// 所属分组 id；None 表示未分组。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 /// 连接配置存储。作为 Tauri State 注入。
@@ -110,6 +114,7 @@ impl ProfileStore {
             user: input.user,
             auth_method: input.auth_method,
             private_key_path: input.private_key_path,
+            group_id: input.group_id,
         };
         let mut guard = self.profiles.lock().await;
         guard.push(profile.clone());
@@ -176,6 +181,7 @@ impl ProfileStore {
             user: input.user,
             auth_method: input.auth_method,
             private_key_path: input.private_key_path,
+            group_id: input.group_id,
         };
         let updated = guard[idx].clone();
         self.persist(&guard)?;
@@ -199,6 +205,22 @@ impl ProfileStore {
         }
         self.cache.remove(id).await;
         self.cache.remove(&passphrase_key(id)).await;
+        Ok(())
+    }
+
+    /// 删除分组时，清除所有 profile 对该分组的引用。
+    pub async fn clear_group_refs(&self, group_id: &str) -> Result<(), String> {
+        let mut guard = self.profiles.lock().await;
+        let mut changed = false;
+        for p in guard.iter_mut() {
+            if p.group_id.as_deref() == Some(group_id) {
+                p.group_id = None;
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist(&guard)?;
+        }
         Ok(())
     }
 
