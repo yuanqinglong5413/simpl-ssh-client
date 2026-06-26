@@ -15,8 +15,8 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use super::auth::SshConnectParams;
 use super::forward::ForwardRegistry;
-use super::ssh::SshConnectParams;
 use super::{ClientHandler, HostKeyVerifier};
 
 /// TCP 建连（含 DNS 解析）超时。不通时快速失败，而不是任由系统 SYN 重传挂死。
@@ -129,24 +129,9 @@ impl SessionManager {
             other => anyhow::anyhow!("SSH 握手失败：{other}"),
         })?;
 
-        // 3) 密码认证
+        // 3) 身份认证（密码或私钥）
         emit_progress(app, connect_id, "auth", format!("认证用户 {}", p.user));
-        let authed = match tokio::time::timeout(
-            AUTH_TTL,
-            handle.authenticate_password(p.user.as_str(), p.password.as_str()),
-        )
-        .await
-        {
-            Ok(Ok(a)) => a,
-            Ok(Err(e)) => anyhow::bail!("认证出错：{e}"),
-            Err(_) => anyhow::bail!("认证超时（{} 秒）", AUTH_TTL.as_secs()),
-        };
-        if !authed.success() {
-            let _ = handle
-                .disconnect(Disconnect::ByApplication, "auth failed", "en")
-                .await;
-            anyhow::bail!("认证失败：用户名或密码错误");
-        }
+        super::auth::authenticate(&mut handle, p.user.as_str(), &p.auth, AUTH_TTL).await?;
 
         emit_progress(app, connect_id, "ready", "已连接");
 

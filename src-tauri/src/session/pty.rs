@@ -13,17 +13,29 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-/// 一个终端的输入 / 输出管道。
+/// 前端经 WS 发来的控制消息（终端 resize 等）。
+#[derive(Debug, Deserialize)]
+struct WsControlMsg {
+    #[serde(rename = "type")]
+    msg_type: String,
+    cols: u32,
+    rows: u32,
+}
+
+/// 一个终端的输入 / 输出 / 尺寸管道。
 pub struct TerminalPipes {
     /// 前端按键 → 发到此 Sender → 桥接 task 写进 channel。
     pub input_tx: mpsc::Sender<Vec<u8>>,
     /// 桥接 task 从 channel 读出 → 发到此管道 → WS handler 从 Receiver 取。
     pub output_rx: mpsc::Receiver<Vec<u8>>,
+    /// 前端窗口尺寸变化 → 桥接 task 调用 channel.window_change。
+    pub resize_tx: mpsc::Sender<(u32, u32)>,
 }
 
 /// 终端桥：本地 WS 服务 + token→pipes 映射。作为 Tauri State（包成 `Arc`）注入。
@@ -85,6 +97,7 @@ impl TerminalBridge {
         let TerminalPipes {
             input_tx,
             mut output_rx,
+            resize_tx,
         } = self
             .take(&token)
             .await
@@ -98,6 +111,15 @@ impl TerminalBridge {
                         if input_tx.send(b.to_vec()).await.is_err() { break; }
                     }
                     Some(Ok(Message::Text(t))) => {
+                        /* 控制消息：{"type":"resize","cols":N,"rows":M} */
+                        if let Ok(ctrl) = serde_json::from_str::<WsControlMsg>(&t) {
+                            if ctrl.msg_type == "resize" && ctrl.cols > 0 && ctrl.rows > 0 {
+                                if resize_tx.send((ctrl.cols, ctrl.rows)).await.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
                         if input_tx.send(t.as_str().as_bytes().to_vec()).await.is_err() { break; }
                     }
                     Some(Ok(Message::Close(_))) | None => break,

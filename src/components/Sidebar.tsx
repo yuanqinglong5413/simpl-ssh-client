@@ -1,9 +1,10 @@
-import { Plus, Server, Terminal, Trash2 } from "lucide-react";
+import { Plus, Pencil, Server, Terminal, Trash2 } from "lucide-react";
 import type { ConnectionProfile } from "../types";
 
 type Props = {
   profiles: ConnectionProfile[];
   onConnectProfile: (id: string) => void;
+  onEditProfile: (profile: ConnectionProfile) => void;
   onDeleteProfile: (id: string) => void;
   onNew: () => void;
 };
@@ -11,6 +12,7 @@ type Props = {
 export function Sidebar({
   profiles,
   onConnectProfile,
+  onEditProfile,
   onDeleteProfile,
   onNew,
 }: Props) {
@@ -48,9 +50,20 @@ export function Sidebar({
               <span className="session-meta">
                 <div className="session-title">{p.name}</div>
                 <div className="session-sub">
+                  {p.auth_method === "private_key" ? "🔑 " : ""}
                   {p.user}@{p.host}:{p.port}
                 </div>
               </span>
+              <button
+                className="session-x"
+                title="编辑"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEditProfile(p);
+                }}
+              >
+                <Pencil size={13} />
+              </button>
               <button
                 className="session-x"
                 title="删除"

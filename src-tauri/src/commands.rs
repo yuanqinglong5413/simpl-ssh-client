@@ -8,13 +8,13 @@ use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::session::forward::{ForwardKind, PortForwardManager};
-use crate::session::profile::ProfileStore;
+use crate::session::profile::{ProfileInput, ProfileStore};
 use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
-    connect_and_exec, HostKeyVerifier, SessionInfo, SessionManager, SshConnectParams,
-    TerminalBridge,
+    connect_and_exec, AuthMethod, HostKeyVerifier, SessionInfo, SessionManager, SshAuth,
+    SshConnectParams, TerminalBridge,
 };
 
 // ==============================  SSH 会话  =================================
@@ -28,18 +28,13 @@ pub async fn ssh_exec(
     password: String,
     command: String,
 ) -> Result<String, String> {
-    let params = SshConnectParams {
-        host,
-        port,
-        user,
-        password,
-    };
+    let params = SshConnectParams::with_password(host, port, user, password);
     connect_and_exec(&params, &command)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// 建立持久会话（连接 + 密码认证），返回会话信息。终端 / SFTP 复用此会话。
+/// 建立持久会话（连接 + 认证），返回会话信息。终端 / SFTP 复用此会话。
 /// `connect_id` 用于关联 `ssh://progress` 阶段事件，前端据此展示连接进度。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -51,13 +46,17 @@ pub async fn ssh_connect(
     host: String,
     port: u16,
     user: String,
-    password: String,
+    auth_method: String,
+    password: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
 ) -> Result<SessionInfo, String> {
+    let auth = build_auth(&auth_method, password, private_key_path, passphrase)?;
     let params = SshConnectParams {
         host,
         port,
         user,
-        password,
+        auth,
     };
     state
         .connect(&params, &app, &connect_id, verifier.inner())
@@ -128,10 +127,12 @@ pub async fn terminal_open(
 
     let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(64);
     let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(8);
     let token = bridge
         .register(TerminalPipes {
             input_tx,
             output_rx,
+            resize_tx,
         })
         .await;
     let port = bridge.port;
@@ -141,6 +142,9 @@ pub async fn terminal_open(
             tokio::select! {
                 Some(bytes) = input_rx.recv() => {
                     if channel.data_bytes(bytes).await.is_err() { break; }
+                }
+                Some((cols, rows)) = resize_rx.recv() => {
+                    if channel.window_change(cols, rows, 0, 0).await.is_err() { break; }
                 }
                 msg = channel.wait() => match msg {
                     Some(ChannelMsg::Data { ref data }) => {
@@ -383,17 +387,77 @@ pub async fn profile_list(
     Ok(state.list().await)
 }
 
-/// 保存一个连接配置（密码进 OS 钥匙串，元数据进本地 JSON）。返回新建的配置。
+/// 保存一个连接配置（凭据进 OS 钥匙串，元数据进本地 JSON）。返回新建的配置。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn profile_save(
     state: tauri::State<'_, ProfileStore>,
     name: String,
     host: String,
     port: u16,
     user: String,
-    password: String,
+    auth_method: String,
+    password: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
-    state.save(name, host, port, user, password).await
+    let method = parse_auth_method(&auth_method)?;
+    state
+        .save(ProfileInput {
+            name,
+            host,
+            port,
+            user,
+            auth_method: method,
+            password,
+            private_key_path,
+            passphrase,
+        })
+        .await
+}
+
+/// 更新一个已保存的连接配置；密码 / passphrase 留空则保留原值。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn profile_update(
+    state: tauri::State<'_, ProfileStore>,
+    id: String,
+    name: String,
+    host: String,
+    port: u16,
+    user: String,
+    auth_method: String,
+    password: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
+) -> Result<crate::session::profile::ConnectionProfile, String> {
+    let method = parse_auth_method(&auth_method)?;
+    state
+        .update(
+            &id,
+            ProfileInput {
+                name,
+                host,
+                port,
+                user,
+                auth_method: method,
+                password,
+                private_key_path,
+                passphrase,
+            },
+        )
+        .await
+}
+
+/// 弹本地私钥文件选择框，返回绝对路径。
+#[tauri::command]
+pub async fn profile_select_private_key() -> Result<Option<String>, String> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("选择 SSH 私钥文件")
+        .add_filter("SSH 私钥", &["pem", "key", ""])
+        .pick_file()
+        .await;
+    Ok(picked.map(|f| f.path().to_string_lossy().into_owned()))
 }
 
 /// 删除一个保存的连接配置（同时清理钥匙串）。
@@ -419,17 +483,45 @@ pub async fn profile_connect(
         .find(&id)
         .await
         .ok_or_else(|| format!("profile not found: {id}"))?;
-    let password = state.get_password(&p.id).await?;
-    let params = SshConnectParams {
-        host: p.host,
-        port: p.port,
-        user: p.user,
-        password,
-    };
+    let params = state.to_connect_params(&p).await?;
     sessions
         .connect(&params, &app, &connect_id, verifier.inner())
         .await
         .map_err(|e| e.to_string())
+}
+
+fn parse_auth_method(raw: &str) -> Result<AuthMethod, String> {
+    match raw {
+        "password" => Ok(AuthMethod::Password),
+        "private_key" => Ok(AuthMethod::PrivateKey),
+        _ => Err(format!("unknown auth_method: {raw}")),
+    }
+}
+
+fn build_auth(
+    auth_method: &str,
+    password: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
+) -> Result<SshAuth, String> {
+    match auth_method {
+        "password" => {
+            let pw = password
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "密码认证需要填写密码".to_string())?;
+            Ok(SshAuth::Password(pw))
+        }
+        "private_key" => {
+            let path = private_key_path
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "私钥认证需要选择私钥文件".to_string())?;
+            Ok(SshAuth::PrivateKey {
+                path,
+                passphrase: passphrase.filter(|s| !s.is_empty()),
+            })
+        }
+        other => Err(format!("unknown auth_method: {other}")),
+    }
 }
 
 // ============================  主机公钥校验  ================================

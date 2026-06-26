@@ -9,6 +9,14 @@
 ### 计划中
 - 连接分组树、系统监控、跳板机
 
+## [0.4.0] - 2026-06-26
+
+### 新增
+- **PTY 动态 resize**：窗口缩放 / 分屏拖拽时自动同步远端终端尺寸（vim/htop 布局正常）。
+- **连接配置编辑**：侧栏铅笔按钮编辑已保存连接，支持更新主机/用户/认证方式。
+- **终端搜索**：Ctrl+F / Cmd+F 打开搜索栏，Enter / Shift+Enter 导航匹配项。
+- **SSH 私钥认证**：连接与保存配置均支持密码 / 私钥两种方式，私钥 passphrase 存钥匙串。
+
 ## [0.3.2] - 2026-06-26
 
 ### 新增
@@ -84,7 +92,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.2.0...v0.3.0

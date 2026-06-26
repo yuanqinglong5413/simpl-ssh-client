@@ -6,6 +6,7 @@
 //! - `forward`  端口转发（-L/-R/-D）。
 //! - `socks`    SOCKS5 握手（-D 用）。
 
+pub mod auth;
 pub mod forward;
 pub mod known_hosts;
 pub mod manager;
@@ -17,13 +18,15 @@ pub mod socks;
 pub mod ssh;
 pub mod transfer;
 
+pub use auth::{SshAuth, SshConnectParams};
 pub use forward::{ForwardRegistry, PortForwardManager};
 pub use known_hosts::{HostKeyCheck, HostKeyEvent, HostKeyVerifier};
 pub use manager::{SessionInfo, SessionManager};
+pub use profile::AuthMethod;
 pub use profile::ProfileStore;
 pub use pty::TerminalBridge;
 pub use sftp::SftpManager;
-pub use ssh::{connect_and_exec, SshConnectParams};
+pub use ssh::connect_and_exec;
 pub use transfer::TransferQueue;
 
 use std::collections::HashMap;

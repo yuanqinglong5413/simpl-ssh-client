@@ -27,6 +27,7 @@ function App() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [showConnect, setShowConnect] = useState(false);
+  const [editProfile, setEditProfile] = useState<ConnectionProfile | null>(null);
   const [toast, setToast] = useState("");
   const [connecting, setConnecting] = useState<{
     cid: string;
@@ -241,6 +242,7 @@ function App() {
       <Sidebar
         profiles={profiles}
         onConnectProfile={connectProfile}
+        onEditProfile={setEditProfile}
         onDeleteProfile={deleteProfile}
         onNew={() => setShowConnect(true)}
       />
@@ -294,10 +296,15 @@ function App() {
         />
       </div>
 
-      {showConnect && (
+      {(showConnect || editProfile) && (
         <ConnectDialog
-          onClose={() => setShowConnect(false)}
+          editProfile={editProfile ?? undefined}
+          onClose={() => {
+            setShowConnect(false);
+            setEditProfile(null);
+          }}
           onConnected={onConnected}
+          onProfileSaved={refreshProfiles}
         />
       )}
 

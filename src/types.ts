@@ -6,12 +6,16 @@ export type SessionInfo = {
   created_at: string;
 };
 
+export type AuthMethod = "password" | "private_key";
+
 export type ConnectionProfile = {
   id: string;
   name: string;
   host: string;
   port: number;
   user: string;
+  auth_method?: AuthMethod;
+  private_key_path?: string | null;
 };
 
 /** 分屏方向：horizontal=左右切，vertical=上下切。 */

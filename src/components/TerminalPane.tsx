@@ -5,22 +5,23 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { invoke } from "@tauri-apps/api/core";
 import { useTheme } from "../theme/ThemeProvider";
 import { createLogHighlighter } from "../utils/logHighlight";
+import { TerminalSearchBar } from "./TerminalSearchBar";
 import "@xterm/xterm/css/xterm.css";
 
 type Props = { sessionId: string; paneId: string };
 
 /**
  * 一个终端面板：xterm.js ↔ 本地 WebSocket ↔ 后端 PTY channel。
- * 以 `paneId` 为身份——同一 session 下多个 paneId 各开独立 PTY（分屏复用）。
- * 面板常驻挂载（切换 Tab 时仅用 CSS 隐藏），保证后台终端不被打断。
- * 尺寸变化（包括从隐藏切到显示、分屏拖拽）由 ResizeObserver 触发 fit。
- * PTY 就绪前显示"正在打开终端…"占位。
- * 主题切换时实时更新 xterm 配色；纯文本日志自动注入语义化 ANSI 颜色。
+ * 支持动态 resize、Ctrl+F 搜索、主题联动、日志语法高亮。
  */
 export function TerminalPane({ sessionId, paneId }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [ready, setReady] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const { terminalTheme } = useTheme();
 
   useEffect(() => {
@@ -38,34 +39,59 @@ export function TerminalPane({ sessionId, paneId }: Props) {
     termRef.current = term;
 
     const fitAddon = new FitAddon();
+    fitRef.current = fitAddon;
     term.loadAddon(fitAddon);
     term.open(host);
     try {
       term.loadAddon(new WebglAddon());
     } catch {
-      // WebGL 不可用时回退到 canvas
+      /* WebGL 不可用时回退 canvas */
     }
     fitAddon.fit();
 
-    const ro = new ResizeObserver(() => {
+    /** 通知远端 PTY 尺寸变化（防抖，避免拖拽分隔条时洪泛） */
+    function sendResize() {
+      const ws = wsRef.current;
+      const t = termRef.current;
+      if (ws?.readyState === WebSocket.OPEN && t && t.cols > 0 && t.rows > 0) {
+        ws.send(
+          JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows })
+        );
+      }
+    }
+
+    function fitAndResize() {
       try {
-        fitAddon.fit();
+        fitRef.current?.fit();
+        if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+        resizeTimerRef.current = setTimeout(sendResize, 80);
       } catch {
         /* 容器尺寸为 0（隐藏中）时忽略 */
       }
-    });
+    }
+
+    const ro = new ResizeObserver(fitAndResize);
     ro.observe(host);
 
-    let ws: WebSocket | null = null;
     let disposed = false;
     const encoder = new TextEncoder();
     const highlighter = createLogHighlighter();
 
     const onDataDisp = term.onData((data) => {
+      const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(encoder.encode(data));
       }
     });
+
+    /** Ctrl+F / Cmd+F 打开终端搜索 */
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    host.addEventListener("keydown", onKeyDown);
 
     invoke<{ port: number; token: string }>("terminal_open", {
       sessionId,
@@ -74,18 +100,18 @@ export function TerminalPane({ sessionId, paneId }: Props) {
     })
       .then((handle) => {
         if (disposed) return;
-        ws = new WebSocket(`ws://127.0.0.1:${handle.port}/`);
+        const ws = new WebSocket(`ws://127.0.0.1:${handle.port}/`);
+        wsRef.current = ws;
         ws.binaryType = "arraybuffer";
         ws.onopen = () => {
-          ws?.send(handle.token);
+          ws.send(handle.token);
           setReady(true);
           term.focus();
-          fitAddon.fit();
+          fitAndResize();
         };
         ws.onmessage = (e) => {
           const raw =
             e.data instanceof ArrayBuffer ? e.data : (e.data as string);
-          /* 对纯文本日志注入语义化颜色，已有 ANSI 的行不会被重复着色 */
           const highlighted = highlighter.transform(raw);
           if (highlighted.length > 0) {
             term.write(highlighted);
@@ -99,15 +125,18 @@ export function TerminalPane({ sessionId, paneId }: Props) {
 
     return () => {
       disposed = true;
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       ro.disconnect();
       onDataDisp.dispose();
-      ws?.close();
+      host.removeEventListener("keydown", onKeyDown);
+      wsRef.current?.close();
+      wsRef.current = null;
       term.dispose();
       termRef.current = null;
+      fitRef.current = null;
     };
   }, [paneId, sessionId]);
 
-  /* 主题切换时实时更新已打开终端的配色 */
   useEffect(() => {
     const term = termRef.current;
     if (term) {
@@ -116,7 +145,15 @@ export function TerminalPane({ sessionId, paneId }: Props) {
   }, [terminalTheme]);
 
   return (
-    <div className="terminal-host" ref={hostRef}>
+    <div className="terminal-host" ref={hostRef} tabIndex={0}>
+      <TerminalSearchBar
+        term={termRef.current}
+        open={searchOpen}
+        onClose={() => {
+          setSearchOpen(false);
+          termRef.current?.focus();
+        }}
+      />
       {!ready && (
         <div className="term-overlay">
           <div className="conn-spinner" />
