@@ -835,6 +835,77 @@ input {
   font-size: 12.5px;
 }
 
+/* ===========================  终端分屏  ================================== */
+.split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+.split-horizontal {
+  flex-direction: row;
+}
+.split-vertical {
+  flex-direction: column;
+}
+.split-child {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.split-leaf {
+  position: absolute;
+  inset: 0;
+}
+.splitter {
+  flex: 0 0 4px;
+  background: var(--border);
+  cursor: col-resize;
+  transition: background 0.12s;
+  z-index: 4;
+}
+.split-vertical > .splitter {
+  cursor: row-resize;
+}
+.splitter:hover {
+  background: var(--accent);
+}
+/* 当前获焦的终端面板高亮边框 */
+.terminal-host:focus-within {
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+/* 面板悬浮操作（分屏 / 关闭） */
+.pane-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.12s;
+  z-index: 6;
+}
+.split-leaf:hover .pane-actions {
+  opacity: 1;
+}
+.pane-actions button {
+  padding: 4px;
+  border-radius: 5px;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.35);
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-soft);
+}
+.pane-actions button:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.pane-actions button.danger:hover {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 /* 侧栏一键连接的全局浮层 */
 .connecting {
   position: fixed;

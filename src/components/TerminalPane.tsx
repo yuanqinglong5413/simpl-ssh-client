@@ -5,15 +5,16 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { invoke } from "@tauri-apps/api/core";
 import "@xterm/xterm/css/xterm.css";
 
-type Props = { sessionId: string };
+type Props = { sessionId: string; paneId: string };
 
 /**
  * 一个终端面板：xterm.js ↔ 本地 WebSocket ↔ 后端 PTY channel。
- * 面板常驻挂载（切换 Tab 时仅用 CSS 隐藏），保证后台终端会话不被打断。
- * 尺寸变化（包括从隐藏切到显示）由 ResizeObserver 触发 fit。
- * PTY 就绪前显示"正在打开终端…"占位，避免一块空白让用户以为卡住。
+ * 以 `paneId` 为身份——同一 session 下多个 paneId 各开独立 PTY（分屏复用）。
+ * 面板常驻挂载（切换 Tab 时仅用 CSS 隐藏），保证后台终端不被打断。
+ * 尺寸变化（包括从隐藏切到显示、分屏拖拽）由 ResizeObserver 触发 fit。
+ * PTY 就绪前显示"正在打开终端…"占位。
  */
-export function TerminalPane({ sessionId }: Props) {
+export function TerminalPane({ sessionId, paneId }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
 
@@ -95,7 +96,7 @@ export function TerminalPane({ sessionId }: Props) {
       ws?.close();
       term.dispose();
     };
-  }, [sessionId]);
+  }, [paneId, sessionId]);
 
   return (
     <div className="terminal-host" ref={hostRef}>

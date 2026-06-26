@@ -6,10 +6,10 @@ import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectDialog } from "./components/ConnectDialog";
-import { TerminalPane } from "./components/TerminalPane";
+import { SplitView } from "./components/SplitView";
 import { SftpPane } from "./components/SftpPane";
 import { ConnSteps } from "./components/ConnSteps";
-import type { ConnectionProfile, SessionInfo, Tab } from "./types";
+import type { ConnectionProfile, SessionInfo, SplitNode, Tab } from "./types";
 import "./App.css";
 
 function App() {
@@ -73,6 +73,11 @@ function App() {
       sessionId: s.id,
       title: `${s.user}@${s.host}`,
       kind: "terminal",
+      layout: {
+        kind: "leaf",
+        paneId: crypto.randomUUID(),
+        sessionId: s.id,
+      },
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
@@ -97,6 +102,12 @@ function App() {
   function closeTab(id: string) {
     setTabs((prev) => prev.filter((t) => t.id !== id));
     setActiveTabId((prev) => (prev === id ? null : prev));
+  }
+
+  function updateTabLayout(tabId: string, layout: SplitNode) {
+    setTabs((prev) =>
+      prev.map((t) => (t.id === tabId ? { ...t, layout } : t))
+    );
   }
 
   async function connectProfile(id: string) {
@@ -191,7 +202,12 @@ function App() {
                 {t.kind === "sftp" ? (
                   <SftpPane sessionId={t.sessionId} />
                 ) : (
-                  <TerminalPane sessionId={t.sessionId} />
+                  <SplitView
+                    layout={t.layout!}
+                    sessionId={t.sessionId}
+                    onChange={(n) => updateTabLayout(t.id, n)}
+                    onCloseAll={() => closeTab(t.id)}
+                  />
                 )}
               </div>
             ))
