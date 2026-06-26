@@ -1,18 +1,16 @@
 //! 暴露给前端的 Tauri 命令。
 
-use std::path::Path;
 use std::sync::Arc;
 
 use russh::ChannelMsg;
-use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::session::profile::ProfileStore;
 use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
+use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
     connect_and_exec, SessionInfo, SessionManager, SshConnectParams, TerminalBridge,
 };
@@ -159,13 +157,6 @@ pub async fn terminal_open(
 
 // ===============================  SFTP  ====================================
 
-#[derive(Clone, Serialize)]
-struct TransferProgress {
-    name: String,
-    transferred: u64,
-    total: u64,
-}
-
 /// 列目录。path 为空时用家目录。返回 (规范化绝对路径, 条目列表)。
 #[tauri::command]
 pub async fn sftp_list(
@@ -221,205 +212,76 @@ pub async fn sftp_remove(
     res.map_err(|e| e.to_string())
 }
 
-/// 上传：弹本地文件选择框（可多选），逐个上传到 remote_dir。
+// ----------------------------  选框（不传输）-------------------------------
+
+/// 弹本地文件选择框（可多选），返回所选文件的绝对路径列表。不执行传输。
 #[tauri::command]
-pub async fn sftp_upload(
-    app: AppHandle,
-    sftp_mgr: tauri::State<'_, SftpManager>,
-    sessions: tauri::State<'_, SessionManager>,
-    session_id: String,
-    remote_dir: String,
-) -> Result<(), String> {
-    let sftp = sftp_mgr.get(sessions.inner(), &session_id).await?;
+pub async fn sftp_select_local_files() -> Result<Vec<String>, String> {
     let files = rfd::AsyncFileDialog::new()
         .set_title("选择要上传的文件（可多选）")
         .pick_files()
         .await
         .ok_or_else(|| "未选择文件".to_string())?;
-    for f in files {
-        let local = f.path().to_path_buf();
-        let name = f.file_name();
-        let remote = join_remote(&remote_dir, &name);
-        upload_recursive(&sftp, &local, &remote, &app).await?;
-    }
-    Ok(())
+    Ok(files
+        .into_iter()
+        .map(|f| f.path().to_string_lossy().into_owned())
+        .collect())
 }
 
-/// 上传整个文件夹：弹文件夹选择框，递归上传到 remote_dir/<文件夹名>。
+/// 弹文件夹选择框，返回所选文件夹的绝对路径。不执行传输。
 #[tauri::command]
-pub async fn sftp_upload_dir(
-    app: AppHandle,
-    sftp_mgr: tauri::State<'_, SftpManager>,
-    sessions: tauri::State<'_, SessionManager>,
-    session_id: String,
-    remote_dir: String,
-) -> Result<(), String> {
-    let sftp = sftp_mgr.get(sessions.inner(), &session_id).await?;
-    let folder = rfd::AsyncFileDialog::new()
-        .set_title("选择要上传的文件夹")
+pub async fn sftp_select_folder(title: String) -> Result<Option<String>, String> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title(title)
         .pick_folder()
-        .await
-        .ok_or_else(|| "未选择文件夹".to_string())?;
-    let local = folder.path().to_path_buf();
-    let name = local
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "folder".to_string());
-    let remote = join_remote(&remote_dir, &name);
-    upload_recursive(&sftp, &local, &remote, &app).await?;
-    Ok(())
+        .await;
+    Ok(picked.map(|p| p.path().to_string_lossy().into_owned()))
 }
 
-/// 下载：把 remote_path（文件或目录）下载到本地（弹保存位置选择框）。
+// ------------------------------  传输队列  ---------------------------------
+
+/// 入队一个传输任务，返回 task id。前端选好本地路径后调用。
 #[tauri::command]
-pub async fn sftp_download(
-    app: AppHandle,
-    sftp_mgr: tauri::State<'_, SftpManager>,
-    sessions: tauri::State<'_, SessionManager>,
+pub async fn transfer_enqueue(
+    queue: tauri::State<'_, TransferQueue>,
     session_id: String,
+    kind: String,
+    local_path: String,
     remote_path: String,
-) -> Result<(), String> {
-    let sftp = sftp_mgr.get(sessions.inner(), &session_id).await?;
-    let dest = rfd::AsyncFileDialog::new()
-        .set_title("选择保存位置（下载到该文件夹下）")
-        .pick_folder()
-        .await
-        .ok_or_else(|| "未选择保存位置".to_string())?;
-    let name = remote_path
-        .rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or("download")
-        .to_string();
-    let local = dest.path().join(&name);
-    download_recursive(&sftp, &remote_path, &local, &app).await?;
-    Ok(())
-}
-
-// --------------------------- 递归 / 流式辅助 -------------------------------
-
-use russh_sftp::client::SftpSession;
-
-/// 递归上传：本地是目录则建远程目录并下钻；是文件则流式上传。
-async fn upload_recursive(
-    sftp: &SftpSession,
-    local: &Path,
-    remote: &str,
-    app: &AppHandle,
-) -> Result<(), String> {
-    if local.is_dir() {
-        // 远程目录已存在则忽略错误继续下钻
-        let _ = sftp.create_dir(remote).await;
-        let mut rd = tokio::fs::read_dir(local)
-            .await
-            .map_err(|e| e.to_string())?;
-        while let Some(entry) = rd.next_entry().await.map_err(|e| e.to_string())? {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let rpath = join_remote(remote, &name);
-            Box::pin(upload_recursive(sftp, &entry.path(), &rpath, app)).await?;
-        }
-        return Ok(());
-    }
-
-    let name = local
+) -> Result<String, String> {
+    let kind = TransferKind::from_str(&kind)?;
+    let local_path = std::path::PathBuf::from(local_path);
+    let name = local_path
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".to_string());
-    let total = std::fs::metadata(local).map_err(|e| e.to_string())?.len();
-    let mut local_f = tokio::fs::File::open(local)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut remote_f = sftp
-        .open_with_flags(
-            remote,
-            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    stream_with_progress(app, &name, total, &mut local_f, &mut remote_f).await?;
-    remote_f.flush().await.map_err(|e| e.to_string())?;
-    Ok(())
+        .map(|n| n.to_string_lossy().into_owned())
+        .or_else(|| {
+            remote_path
+                .rsplit('/')
+                .find(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "transfer".to_string());
+    Ok(queue
+        .enqueue(session_id, kind, local_path, remote_path, name)
+        .await)
 }
 
-/// 递归下载：远程是目录则建本地目录并下钻；是文件则流式下载。跳过符号链接避免环。
-async fn download_recursive(
-    sftp: &SftpSession,
-    remote: &str,
-    local: &Path,
-    app: &AppHandle,
+/// 取消一个传输任务。
+#[tauri::command]
+pub async fn transfer_cancel(
+    queue: tauri::State<'_, TransferQueue>,
+    id: String,
 ) -> Result<(), String> {
-    let meta = sftp.metadata(remote).await.map_err(|e| e.to_string())?;
-    if meta.is_dir() {
-        tokio::fs::create_dir_all(local)
-            .await
-            .map_err(|e| e.to_string())?;
-        let read = sftp.read_dir(remote).await.map_err(|e| e.to_string())?;
-        for entry in read {
-            let name = entry.file_name();
-            if name == "." || name == ".." {
-                continue;
-            }
-            if entry.metadata().is_symlink() {
-                continue;
-            }
-            let rpath = join_remote(remote, &name);
-            let lpath = local.join(&name);
-            Box::pin(download_recursive(sftp, &rpath, &lpath, app)).await?;
-        }
-        return Ok(());
-    }
-
-    let name = local
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "download".to_string());
-    let total = meta.len();
-    let mut remote_f = sftp.open(remote).await.map_err(|e| e.to_string())?;
-    let mut local_f = tokio::fs::File::create(local)
-        .await
-        .map_err(|e| e.to_string())?;
-    stream_with_progress(app, &name, total, &mut remote_f, &mut local_f).await?;
-    local_f.flush().await.map_err(|e| e.to_string())?;
+    queue.cancel(&id).await;
     Ok(())
 }
 
-/// 拼接远程路径，避免重复斜杠。
-fn join_remote(dir: &str, name: &str) -> String {
-    if dir.is_empty() {
-        format!("/{name}")
-    } else if dir.ends_with('/') {
-        format!("{dir}{name}")
-    } else {
-        format!("{dir}/{name}")
-    }
-}
-
-/// 通用流式拷贝 + 进度事件推送（每 64KB 一片）。
-async fn stream_with_progress(
-    app: &AppHandle,
-    name: &str,
-    total: u64,
-    src: &mut (impl AsyncRead + Unpin),
-    dst: &mut (impl AsyncWrite + Unpin),
-) -> Result<(), String> {
-    let mut buf = vec![0u8; 65536];
-    let mut transferred: u64 = 0;
-    loop {
-        let n = src.read(&mut buf).await.map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        dst.write_all(&buf[..n]).await.map_err(|e| e.to_string())?;
-        transferred += n as u64;
-        let _ = app.emit(
-            "sftp://transfer",
-            TransferProgress {
-                name: name.to_string(),
-                transferred,
-                total,
-            },
-        );
-    }
-    Ok(())
+/// 列出所有传输任务快照。
+#[tauri::command]
+pub async fn transfer_list(
+    queue: tauri::State<'_, TransferQueue>,
+) -> Result<Vec<crate::session::transfer::TransferTaskSnap>, String> {
+    Ok(queue.list().await)
 }
 
 // ==============================  连接配置  =================================

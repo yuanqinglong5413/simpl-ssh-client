@@ -1,6 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import {
   ArrowUp,
   Download,
@@ -17,11 +16,10 @@ import type { FileEntry } from "../types";
 
 type Props = { sessionId: string };
 
-type Progress = { name: string; transferred: number; total: number };
-
 /**
- * SFTP 文件面板：在会话已建立的连接上浏览远程文件系统，
- * 支持进入目录、上传 / 下载（流式 + 进度）、新建 / 重命名 / 删除。
+ * SFTP 文件面板：浏览远程文件系统，进入目录、上传/下载（入传输队列，非阻塞）、
+ * 新建 / 重命名 / 删除。上传/下载不再阻塞 UI——选好本地路径即入队，
+ * 进度与状态见全局 TransferPanel。
  */
 export function SftpPane({ sessionId }: Props) {
   const [cwd, setCwd] = useState("");
@@ -30,8 +28,7 @@ export function SftpPane({ sessionId }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<Progress | null>(null);
+  const [busy, setBusy] = useState(false); // 仅即时操作（mkdir/rename/remove）
 
   async function load(path?: string) {
     setLoading(true);
@@ -52,19 +49,10 @@ export function SftpPane({ sessionId }: Props) {
     }
   }
 
-  // 打开时列家目录
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
-
-  // 监听传输进度
-  useEffect(() => {
-    const un = listen<Progress>("sftp://transfer", (e) => setProgress(e.payload));
-    return () => {
-      un.then((u) => u());
-    };
-  }, []);
 
   const join = (name: string) => (cwd === "/" ? `/${name}` : `${cwd}/${name}`);
   const parent = () => "/" + cwd.split("/").filter(Boolean).slice(0, -1).join("/");
@@ -74,47 +62,62 @@ export function SftpPane({ sessionId }: Props) {
     else download(join(e.name));
   }
 
+  function baseName(p: string): string {
+    return p.split("/").filter(Boolean).pop() ?? p;
+  }
+
   async function upload() {
-    setBusy(true);
     setError("");
-    setProgress(null);
     try {
-      await invoke("sftp_upload", { sessionId, remoteDir: cwd || "/" });
-      await load();
+      const files = await invoke<string[]>("sftp_select_local_files");
+      for (const p of files) {
+        await invoke("transfer_enqueue", {
+          sessionId,
+          kind: "upload",
+          localPath: p,
+          remotePath: join(baseName(p)),
+        });
+      }
     } catch (e) {
       setError(String(e));
-    } finally {
-      setBusy(false);
-      setProgress(null);
     }
   }
 
   async function uploadDir() {
-    setBusy(true);
     setError("");
-    setProgress(null);
     try {
-      await invoke("sftp_upload_dir", { sessionId, remoteDir: cwd || "/" });
-      await load();
+      const folder = await invoke<string | null>("sftp_select_folder", {
+        title: "选择要上传的文件夹",
+      });
+      if (!folder) return;
+      await invoke("transfer_enqueue", {
+        sessionId,
+        kind: "uploadDir",
+        localPath: folder,
+        remotePath: join(baseName(folder)),
+      });
     } catch (e) {
       setError(String(e));
-    } finally {
-      setBusy(false);
-      setProgress(null);
     }
   }
 
   async function download(remotePath: string) {
-    setBusy(true);
     setError("");
-    setProgress(null);
     try {
-      await invoke("sftp_download", { sessionId, remotePath });
+      const dest = await invoke<string | null>("sftp_select_folder", {
+        title: "选择保存位置（下载到该文件夹下）",
+      });
+      if (!dest) return;
+      const name = baseName(remotePath);
+      const local = dest.endsWith("/") ? `${dest}${name}` : `${dest}/${name}`;
+      await invoke("transfer_enqueue", {
+        sessionId,
+        kind: "download",
+        localPath: local,
+        remotePath,
+      });
     } catch (e) {
       setError(String(e));
-    } finally {
-      setBusy(false);
-      setProgress(null);
     }
   }
 
@@ -140,7 +143,11 @@ export function SftpPane({ sessionId }: Props) {
     setBusy(true);
     setError("");
     try {
-      await invoke("sftp_rename", { sessionId, from: join(selected), to: join(to) });
+      await invoke("sftp_rename", {
+        sessionId,
+        from: join(selected),
+        to: join(to),
+      });
       await load();
     } catch (e) {
       setError(String(e));
@@ -174,11 +181,6 @@ export function SftpPane({ sessionId }: Props) {
     if (e.key === "Enter") load(pathInput);
   }
 
-  const pct =
-    progress && progress.total > 0
-      ? Math.round((progress.transferred / progress.total) * 100)
-      : 0;
-
   return (
     <div className="sftp">
       <div className="sftp-toolbar">
@@ -202,20 +204,25 @@ export function SftpPane({ sessionId }: Props) {
           <RefreshCw size={15} />
         </button>
         <div className="sftp-sep" />
-        <button className="icon-btn" title="新建文件夹" onClick={mkdir} disabled={busy}>
+        <button
+          className="icon-btn"
+          title="新建文件夹"
+          onClick={mkdir}
+          disabled={busy}
+        >
           <FolderPlus size={15} />
         </button>
-        <button className="icon-btn" title="上传文件" onClick={upload} disabled={busy}>
+        <button className="icon-btn" title="上传文件" onClick={upload}>
           <Upload size={15} />
         </button>
-        <button className="icon-btn" title="上传文件夹" onClick={uploadDir} disabled={busy}>
+        <button className="icon-btn" title="上传文件夹" onClick={uploadDir}>
           <FolderUp size={15} />
         </button>
         <button
           className="icon-btn"
           title="下载"
           onClick={() => selected && download(join(selected))}
-          disabled={busy || !selected}
+          disabled={!selected}
         >
           <Download size={15} />
         </button>
@@ -265,22 +272,6 @@ export function SftpPane({ sessionId }: Props) {
           ))
         )}
       </div>
-
-      {(busy || progress) && (
-        <div className="sftp-progress">
-          {progress ? (
-            <>
-              <span className="sftp-pname">{progress.name}</span>
-              <div className="bar">
-                <div style={{ width: `${pct}%` }} />
-              </div>
-              <span className="sftp-pct">{pct}%</span>
-            </>
-          ) : (
-            <span>处理中…</span>
-          )}
-        </div>
-      )}
     </div>
   );
 }

@@ -10,12 +10,14 @@ pub mod pty;
 pub mod secrets;
 pub mod sftp;
 pub mod ssh;
+pub mod transfer;
 
 pub use manager::{SessionInfo, SessionManager};
 pub use profile::ProfileStore;
 pub use pty::TerminalBridge;
 pub use sftp::SftpManager;
 pub use ssh::{connect_and_exec, SshConnectParams};
+pub use transfer::TransferQueue;
 
 use russh::client;
 use russh::keys::ssh_key::PublicKey;

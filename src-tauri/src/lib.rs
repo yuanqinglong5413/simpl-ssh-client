@@ -22,10 +22,14 @@ pub fn run() {
         .manage(session::SessionManager::default())
         .manage(session::SftpManager::default())
         .manage(session::ProfileStore::default())
+        .manage(session::TransferQueue::default())
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
             app.manage(bridge);
+            // 启动 SFTP 传输队列的串行 worker
+            app.state::<session::TransferQueue>()
+                .start_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,9 +42,11 @@ pub fn run() {
             commands::sftp_mkdir,
             commands::sftp_rename,
             commands::sftp_remove,
-            commands::sftp_upload,
-            commands::sftp_upload_dir,
-            commands::sftp_download,
+            commands::sftp_select_local_files,
+            commands::sftp_select_folder,
+            commands::transfer_enqueue,
+            commands::transfer_cancel,
+            commands::transfer_list,
             commands::profile_list,
             commands::profile_save,
             commands::profile_delete,

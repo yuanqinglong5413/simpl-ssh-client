@@ -9,6 +9,7 @@ import { ConnectDialog } from "./components/ConnectDialog";
 import { SplitView } from "./components/SplitView";
 import { SftpPane } from "./components/SftpPane";
 import { ConnSteps } from "./components/ConnSteps";
+import { TransferPanel } from "./components/TransferPanel";
 import type { ConnectionProfile, SessionInfo, SplitNode, Tab } from "./types";
 import "./App.css";
 
@@ -239,6 +240,8 @@ function App() {
           </div>
         </div>
       )}
+
+      <TransferPanel />
 
       {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
     </div>

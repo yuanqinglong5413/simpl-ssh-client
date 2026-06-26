@@ -43,3 +43,22 @@ export type FileEntry = {
   size: number;
   modified: string | null;
 };
+
+export type TransferKind = "upload" | "uploadDir" | "download";
+export type TransferStatus =
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type TransferTask = {
+  id: string;
+  session_id: string;
+  kind: TransferKind;
+  name: string;
+  total: number;
+  transferred: number;
+  status: TransferStatus;
+  error: string | null;
+};
