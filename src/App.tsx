@@ -16,6 +16,7 @@ import { HostKeyDialog } from "./components/HostKeyDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import { useSettings } from "./settings/SettingsProvider";
+import { useUpdater } from "./hooks/useUpdater";
 import type {
   ConnectionProfile,
   HostKeyEvent,
@@ -48,6 +49,7 @@ function replaceSessionInLayout(
 
 function App() {
   const { settings } = useSettings();
+  const { checkForUpdates } = useUpdater();
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [groups, setGroups] = useState<ProfileGroup[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -110,6 +112,14 @@ function App() {
     refreshSessions();
     refreshProfiles();
     refreshGroups();
+  }, []);
+
+  useEffect(() => {
+    if (settings.checkUpdatesOnStart) {
+      void checkForUpdates(true);
+    }
+    // 仅启动时检查一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

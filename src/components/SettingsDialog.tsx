@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { RotateCcw, Settings, X } from "lucide-react";
+import { RotateCcw, Settings, Download, X } from "lucide-react";
 import { FONT_OPTIONS } from "../settings/types";
 import { useSettings } from "../settings/SettingsProvider";
+import { useUpdater } from "../hooks/useUpdater";
 
 type Props = {
   open: boolean;
@@ -13,6 +14,7 @@ type Props = {
  */
 export function SettingsDialog({ open, onClose }: Props) {
   const { settings, updateSettings, resetSettings } = useSettings();
+  const { checking, message: updateMsg, checkForUpdates } = useUpdater();
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -156,6 +158,41 @@ export function SettingsDialog({ open, onClose }: Props) {
                   })
                 }
               />
+            </div>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.enableX11}
+                onChange={(e) =>
+                  updateSettings({ enableX11: e.target.checked })
+                }
+              />
+              终端 X11 转发（远程 GUI 程序显示到本机，需 DISPLAY）
+            </label>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">更新</h3>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.checkUpdatesOnStart}
+                onChange={(e) =>
+                  updateSettings({ checkUpdatesOnStart: e.target.checked })
+                }
+              />
+              启动时检查更新（GitHub Release）
+            </label>
+            <div className="field">
+              <button
+                type="button"
+                className="btn btn-ghost settings-update-btn"
+                disabled={checking}
+                onClick={() => checkForUpdates(false)}
+              >
+                <Download size={14} /> {checking ? "检查中…" : "立即检查更新"}
+              </button>
+              {updateMsg && <p className="settings-update-msg">{updateMsg}</p>}
             </div>
           </section>
 

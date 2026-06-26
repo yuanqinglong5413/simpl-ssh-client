@@ -18,7 +18,9 @@ pub mod secrets;
 pub mod sftp;
 pub mod socks;
 pub mod ssh;
+pub mod sync;
 pub mod transfer;
+pub mod x11;
 
 pub use auth::{SshAuth, SshConnectParams};
 pub use forward::{ForwardRegistry, PortForwardManager};
@@ -60,6 +62,8 @@ pub(crate) struct ClientHandler {
     /// `None` = 非交互（一次性 exec demo）：未知主机静默 TOFU、公钥变更则拒绝。
     /// `Some` = 交互式（持久会话）：未知 / 变更都暂存公钥并推前端确认。
     verify: Option<VerifyCtx>,
+    /// X11 转发目标 DISPLAY（终端开启 X11 时写入，供 channel 回调桥接）。
+    x11_display: Arc<Mutex<Option<String>>>,
 }
 
 /// 交互式校验上下文（持久会话用）。
@@ -77,6 +81,7 @@ impl ClientHandler {
             host,
             port,
             verify: None,
+            x11_display: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -88,6 +93,7 @@ impl ClientHandler {
         connect_id: String,
         verifier: HostKeyVerifier,
         forward_registry: ForwardRegistry,
+        x11_display: Arc<Mutex<Option<String>>>,
     ) -> Self {
         Self {
             forward_registry,
@@ -98,6 +104,7 @@ impl ClientHandler {
                 connect_id,
                 verifier,
             }),
+            x11_display,
         }
     }
 }
@@ -191,6 +198,23 @@ impl client::Handler for ClientHandler {
                         }
                     }
                 }
+            });
+        }
+        Ok(())
+    }
+
+    /// X11 转发：远端 GUI 程序经 SSH 打开的 X11 channel 桥到本地 DISPLAY。
+    async fn server_channel_open_x11(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let display = self.x11_display.lock().await.clone();
+        if let Some(disp) = display {
+            tokio::spawn(async move {
+                crate::session::x11::bridge_x11_channel(channel, &disp).await;
             });
         }
         Ok(())

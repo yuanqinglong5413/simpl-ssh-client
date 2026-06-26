@@ -61,6 +61,7 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'simpl-ssh ${{ github.ref_name }}'
@@ -71,6 +72,7 @@ jobs:
             - Linux：`.AppImage` 或 `.deb`
 
             变更说明见 [CHANGELOG](https://github.com/yuanqinglong5413/simpl-ssh-client/blob/main/CHANGELOG.md)。
+          includeUpdaterJson: true
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

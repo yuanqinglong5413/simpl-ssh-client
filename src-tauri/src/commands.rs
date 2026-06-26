@@ -108,6 +108,7 @@ pub async fn terminal_open(
     session_id: String,
     cols: u32,
     rows: u32,
+    enable_x11: Option<bool>,
 ) -> Result<TerminalHandle, String> {
     let entry = sessions
         .get(&session_id)
@@ -121,6 +122,16 @@ pub async fn terminal_open(
             .channel_open_session()
             .await
             .map_err(|e| e.to_string())?;
+        if enable_x11.unwrap_or(false) {
+            let display = crate::session::x11::local_display()
+                .ok_or_else(|| "本机未检测到 DISPLAY 环境变量，无法启用 X11 转发".to_string())?;
+            *entry.x11_display.lock().await = Some(display);
+            let cookie = crate::session::x11::random_x11_cookie();
+            channel
+                .request_x11(true, false, "MIT-MAGIC-COOKIE-1", cookie, 0)
+                .await
+                .map_err(|e| format!("X11 转发请求失败：{e}"))?;
+        }
         channel
             .request_pty(false, "xterm", cols, rows, 0, 0, &[])
             .await
@@ -299,6 +310,31 @@ pub async fn transfer_list(
     queue: tauri::State<'_, TransferQueue>,
 ) -> Result<Vec<crate::session::transfer::TransferTaskSnap>, String> {
     Ok(queue.list().await)
+}
+
+/// 目录同步：比对本地与远程目录，将差异文件入传输队列。
+#[tauri::command]
+pub async fn sync_directory(
+    sessions: tauri::State<'_, SessionManager>,
+    sftp_mgr: tauri::State<'_, SftpManager>,
+    queue: tauri::State<'_, TransferQueue>,
+    session_id: String,
+    local_dir: String,
+    remote_dir: String,
+    mode: String,
+) -> Result<crate::session::sync::SyncPlanResult, String> {
+    use crate::session::sync::{run_directory_sync, SyncMode};
+    let mode = SyncMode::from_str(&mode)?;
+    let sftp = sftp_mgr.get(sessions.inner(), &session_id).await?;
+    run_directory_sync(
+        &sftp,
+        queue.inner(),
+        &session_id,
+        std::path::Path::new(&local_dir),
+        &remote_dir,
+        mode,
+    )
+    .await
 }
 
 // ==============================  端口转发  =================================

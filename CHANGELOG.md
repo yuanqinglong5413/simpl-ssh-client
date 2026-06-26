@@ -7,7 +7,14 @@
 ## [Unreleased]
 
 ### 计划中
-- X11 转发、目录同步、自动更新
+- macOS 公证（codesign + notarize）
+
+## [0.7.0] - 2026-06-26
+
+### 新增
+- **X11 转发**：设置中开启后，终端 SSH 会话请求 X11 转发，远端 GUI 程序可显示到本机 DISPLAY。
+- **目录同步**：SFTP 面板一键比对本地/远程目录树，按时间戳镜像/上传/下载，差异文件入传输队列。
+- **自动更新**：集成 Tauri Updater，启动时可选检查 GitHub Release，设置中支持手动检查并安装。
 
 ## [0.6.0] - 2026-06-26
 
@@ -106,7 +113,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.3.2...v0.4.0

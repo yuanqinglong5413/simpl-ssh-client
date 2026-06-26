@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Updater signing (私钥勿提交)
+src-tauri/simpl-ssh.key
