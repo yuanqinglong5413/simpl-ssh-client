@@ -7,12 +7,14 @@ import {
   Folder,
   FolderPlus,
   FolderUp,
+  FolderSync,
   Pencil,
   RefreshCw,
   Trash2,
   Upload,
 } from "lucide-react";
 import type { FileEntry } from "../types";
+import { SyncDialog } from "./SyncDialog";
 
 type Props = { sessionId: string };
 
@@ -28,7 +30,8 @@ export function SftpPane({ sessionId }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false); // 仅即时操作（mkdir/rename/remove）
+  const [busy, setBusy] = useState(false);
+  const [showSync, setShowSync] = useState(false);
 
   async function load(path?: string) {
     setLoading(true);
@@ -220,6 +223,13 @@ export function SftpPane({ sessionId }: Props) {
         </button>
         <button
           className="icon-btn"
+          title="目录同步"
+          onClick={() => setShowSync(true)}
+        >
+          <FolderSync size={15} />
+        </button>
+        <button
+          className="icon-btn"
           title="下载"
           onClick={() => selected && download(join(selected))}
           disabled={!selected}
@@ -272,6 +282,14 @@ export function SftpPane({ sessionId }: Props) {
           ))
         )}
       </div>
+
+      {showSync && (
+        <SyncDialog
+          sessionId={sessionId}
+          remoteDir={cwd || "/"}
+          onClose={() => setShowSync(false)}
+        />
+      )}
     </div>
   );
 }

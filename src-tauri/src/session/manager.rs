@@ -57,6 +57,8 @@ pub struct SessionEntry {
     pub forward_registry: ForwardRegistry,
     /// 跳板机句柄：ProxyJump 时持有，断开目标会话前不可释放。
     jump_handle: Option<Arc<client::Handle<ClientHandler>>>,
+    /// X11 转发 DISPLAY（与 ClientHandler 共享）。
+    pub x11_display: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,9 +91,18 @@ impl SessionManager {
     ) -> anyhow::Result<SessionInfo> {
         let jump_via = p.jump.as_ref().map(|j| format!("{}:{}", j.host, j.port));
 
+        let x11_display: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
         let (handle, forward_registry, jump_handle) = if let Some(jump) = &p.jump {
-            self.connect_via_jump(p, jump.as_ref(), app, connect_id, verifier)
-                .await?
+            self.connect_via_jump(
+                p,
+                jump.as_ref(),
+                app,
+                connect_id,
+                verifier,
+                x11_display.clone(),
+            )
+            .await?
         } else {
             let socket = tcp_connect(&p.host, p.port, app, connect_id).await?;
             let forward_registry: ForwardRegistry = Arc::new(Mutex::new(HashMap::new()));
@@ -105,6 +116,7 @@ impl SessionManager {
                 connect_id,
                 verifier,
                 forward_registry.clone(),
+                x11_display.clone(),
             )
             .await?;
             (Arc::new(handle), forward_registry, None)
@@ -126,6 +138,7 @@ impl SessionManager {
             handle,
             forward_registry,
             jump_handle,
+            x11_display,
         });
         self.sessions.lock().await.insert(id, entry);
         Ok(info)
@@ -139,6 +152,7 @@ impl SessionManager {
         app: &AppHandle,
         connect_id: &str,
         verifier: &HostKeyVerifier,
+        x11_display: Arc<Mutex<Option<String>>>,
     ) -> anyhow::Result<(
         Arc<client::Handle<ClientHandler>>,
         ForwardRegistry,
@@ -162,6 +176,7 @@ impl SessionManager {
             connect_id,
             verifier,
             jump_registry,
+            x11_display.clone(),
         )
         .await?;
         let jump_arc = Arc::new(jump_handle);
@@ -194,6 +209,7 @@ impl SessionManager {
             connect_id,
             verifier,
             forward_registry.clone(),
+            x11_display,
         )
         .await?;
 
@@ -268,6 +284,7 @@ async fn ssh_over_stream(
     connect_id: &str,
     verifier: &HostKeyVerifier,
     forward_registry: ForwardRegistry,
+    x11_display: Arc<Mutex<Option<String>>>,
 ) -> anyhow::Result<client::Handle<ClientHandler>> {
     emit_progress(app, connect_id, "handshake", "协商加密通道");
     let config = Arc::new(client::Config::default());
@@ -278,6 +295,7 @@ async fn ssh_over_stream(
         connect_id.to_string(),
         verifier.clone(),
         forward_registry,
+        x11_display,
     );
     let mut handle = tokio::time::timeout(
         HANDSHAKE_TTL,

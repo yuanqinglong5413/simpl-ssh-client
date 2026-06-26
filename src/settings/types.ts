@@ -17,6 +17,10 @@ export type AppSettings = {
   autoReconnect: boolean;
   /** 最大重连次数 */
   maxReconnectAttempts: number;
+  /** 终端开启 X11 转发（需本机 DISPLAY） */
+  enableX11: boolean;
+  /** 启动时检查更新 */
+  checkUpdatesOnStart: boolean;
 };
 
 export const SETTINGS_STORAGE_KEY = "simpl-ssh-settings";
@@ -29,6 +33,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cursorBlink: true,
   autoReconnect: true,
   maxReconnectAttempts: 5,
+  enableX11: false,
+  checkUpdatesOnStart: true,
 };
 
 /** 可选终端字体列表 */

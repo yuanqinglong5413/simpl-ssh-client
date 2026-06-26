@@ -19,6 +19,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(session::SessionManager::default())
         .manage(session::SftpManager::default())
         .manage(session::ProfileStore::default())
@@ -51,6 +54,7 @@ pub fn run() {
             commands::transfer_enqueue,
             commands::transfer_cancel,
             commands::transfer_list,
+            commands::sync_directory,
             commands::forward_add,
             commands::forward_list,
             commands::forward_remove,

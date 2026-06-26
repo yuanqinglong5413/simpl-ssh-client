@@ -1,6 +1,6 @@
 [package]
 name = "simpl-ssh"
-version = "0.6.0"
+version = "0.7.0"
 description = "A lightweight Xshell + Xftp combined SSH client built with Rust + Tauri"
 authors = ["yuanqinglong5413"]
 license = "MIT"
@@ -43,4 +43,7 @@ machine-uid = "0.6.0"
 aes-gcm = "0.10.3"
 sha2 = "0.11.0"
 rand = "0.8"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-dialog = "2.7.1"
 

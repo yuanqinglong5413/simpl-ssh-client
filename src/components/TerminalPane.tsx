@@ -104,6 +104,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
       sessionId,
       cols: term.cols,
       rows: term.rows,
+      enableX11: settings.enableX11,
     })
       .then((handle) => {
         if (disposed) return;
