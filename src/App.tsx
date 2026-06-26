@@ -10,6 +10,7 @@ import { SplitView } from "./components/SplitView";
 import { SftpPane } from "./components/SftpPane";
 import { ConnSteps } from "./components/ConnSteps";
 import { TransferPanel } from "./components/TransferPanel";
+import { ForwardPanel } from "./components/ForwardPanel";
 import type { ConnectionProfile, SessionInfo, SplitNode, Tab } from "./types";
 import "./App.css";
 
@@ -242,6 +243,7 @@ function App() {
       )}
 
       <TransferPanel />
+      <ForwardPanel />
 
       {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
     </div>

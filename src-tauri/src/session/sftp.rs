@@ -46,8 +46,8 @@ impl SftpManager {
             .await
             .ok_or_else(|| format!("session not found: {session_id}"))?;
         let channel = {
-            let handle = entry.handle.lock().await;
-            let channel = handle
+            let channel = entry
+                .handle
                 .channel_open_session()
                 .await
                 .map_err(|e| e.to_string())?;

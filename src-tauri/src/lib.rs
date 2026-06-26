@@ -23,6 +23,7 @@ pub fn run() {
         .manage(session::SftpManager::default())
         .manage(session::ProfileStore::default())
         .manage(session::TransferQueue::default())
+        .manage(session::PortForwardManager::default())
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
@@ -47,6 +48,9 @@ pub fn run() {
             commands::transfer_enqueue,
             commands::transfer_cancel,
             commands::transfer_list,
+            commands::forward_add,
+            commands::forward_list,
+            commands::forward_remove,
             commands::profile_list,
             commands::profile_save,
             commands::profile_delete,

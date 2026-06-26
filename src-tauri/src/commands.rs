@@ -7,6 +7,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tokio::sync::mpsc;
 
+use crate::session::forward::{ForwardKind, PortForwardManager};
 use crate::session::profile::ProfileStore;
 use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
@@ -69,13 +70,15 @@ pub async fn ssh_list_sessions(
     Ok(state.list().await)
 }
 
-/// 断开并移除一个会话（同时清理其 SFTP 缓存）。
+/// 断开并移除一个会话（同时停止其端口转发、清理 SFTP 缓存）。
 #[tauri::command]
 pub async fn ssh_disconnect(
     state: tauri::State<'_, SessionManager>,
     sftp: tauri::State<'_, SftpManager>,
+    forwards: tauri::State<'_, PortForwardManager>,
     id: String,
 ) -> Result<(), String> {
+    forwards.close_session(&id).await;
     sftp.close(&id).await;
     state.disconnect(&id).await.map_err(|e| e.to_string())
 }
@@ -104,8 +107,8 @@ pub async fn terminal_open(
     let bridge = bridge.inner().clone();
 
     let mut channel = {
-        let handle = entry.handle.lock().await;
-        let channel = handle
+        let channel = entry
+            .handle
             .channel_open_session()
             .await
             .map_err(|e| e.to_string())?;
@@ -282,6 +285,89 @@ pub async fn transfer_list(
     queue: tauri::State<'_, TransferQueue>,
 ) -> Result<Vec<crate::session::transfer::TransferTaskSnap>, String> {
     Ok(queue.list().await)
+}
+
+// ==============================  端口转发  =================================
+
+/// 新建一条端口转发（-L/-R/-D）。返回新建条目（含实际绑定端口）。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn forward_add(
+    forwards: tauri::State<'_, PortForwardManager>,
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    kind: String,
+    local_addr: String,
+    local_port: u16,
+    remote_host: Option<String>,
+    remote_port: Option<u16>,
+) -> Result<crate::session::forward::ForwardEntrySnap, String> {
+    let kind = match kind.as_str() {
+        "local" => ForwardKind::Local,
+        "remote" => ForwardKind::Remote,
+        "dynamic" => ForwardKind::Dynamic,
+        _ => return Err(format!("unknown forward kind: {kind}")),
+    };
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let handle = entry.handle.clone();
+    let registry = entry.forward_registry.clone();
+    forwards
+        .add(
+            handle,
+            registry,
+            session_id,
+            kind,
+            local_addr,
+            local_port,
+            remote_host,
+            remote_port,
+        )
+        .await
+}
+
+/// 列出所有端口转发。
+#[tauri::command]
+pub async fn forward_list(
+    forwards: tauri::State<'_, PortForwardManager>,
+) -> Result<Vec<crate::session::forward::ForwardEntrySnap>, String> {
+    Ok(forwards.list().await)
+}
+
+/// 停止并移除一条端口转发（-R 额外通知服务器取消远端绑定）。
+#[tauri::command]
+pub async fn forward_remove(
+    forwards: tauri::State<'_, PortForwardManager>,
+    sessions: tauri::State<'_, SessionManager>,
+    id: String,
+) -> Result<(), String> {
+    let snap = forwards
+        .get_snap(&id)
+        .await
+        .ok_or_else(|| format!("forward not found: {id}"))?;
+    if matches!(snap.kind, ForwardKind::Remote) {
+        if let Some(entry) = sessions.get(&snap.session_id).await {
+            let bind_host = snap
+                .remote_host
+                .clone()
+                .unwrap_or_else(|| "127.0.0.1".to_string());
+            {
+                let _ = entry
+                    .handle
+                    .cancel_tcpip_forward(bind_host.clone(), snap.bound_port as u32)
+                    .await;
+            }
+            entry
+                .forward_registry
+                .lock()
+                .await
+                .remove(&(bind_host, snap.bound_port as u32));
+        }
+    }
+    forwards.remove(&id).await;
+    Ok(())
 }
 
 // ==============================  连接配置  =================================

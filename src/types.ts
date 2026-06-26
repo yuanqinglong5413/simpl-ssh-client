@@ -62,3 +62,17 @@ export type TransferTask = {
   status: TransferStatus;
   error: string | null;
 };
+
+export type ForwardKind = "local" | "remote" | "dynamic";
+
+export type ForwardEntry = {
+  id: string;
+  sessionId: string;
+  kind: ForwardKind;
+  localAddr: string;
+  localPort: number;
+  remoteHost: string | null;
+  remotePort: number | null;
+  boundPort: number;
+  state: string;
+};

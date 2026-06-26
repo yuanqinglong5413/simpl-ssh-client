@@ -21,8 +21,12 @@ pub struct SshConnectParams {
 pub async fn connect_and_exec(params: &SshConnectParams, command: &str) -> anyhow::Result<String> {
     let config = Arc::new(client::Config::default());
 
-    let mut handle =
-        client::connect(config, (params.host.as_str(), params.port), ClientHandler).await?;
+    let mut handle = client::connect(
+        config,
+        (params.host.as_str(), params.port),
+        ClientHandler::new(),
+    )
+    .await?;
 
     let authed = handle
         .authenticate_password(params.user.as_str(), params.password.as_str())

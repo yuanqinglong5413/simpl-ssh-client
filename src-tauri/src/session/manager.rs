@@ -1,11 +1,7 @@
-//! 会话池：管理多个持久 SSH 连接，供终端 / SFTP 共享复用。
+//! 会话池：管理多个持久 SSH 连接，供终端 / SFTP / 端口转发共享复用。
 //!
-//! 核心思想：一个连接 = 一个 `SessionEntry`，持有认证后的 russh `Handle`。
-//! 终端、SFTP 各自在这个 Handle 上开 channel，互不影响、共享同一条 TCP/SSH 连接。
-//!
-//! 连接过程分三段（解析+TCP / SSH 握手 / 认证），每段独立超时，并向前端推送
-//! `ssh://progress` 事件，让 UI 能展示"解析主机 → 加密握手 → 身份认证"的进度，
-//! 而不是一个黑盒 await（否则用户只看到"连接中…"，卡住时毫无反馈）。
+//! 核心思想：一个连接 = 一个 `SessionEntry`，持有认证后的 russh `Handle` 和该连接的
+//! `-R` 转发注册表。终端、SFTP、端口转发各自在这个 Handle 上开 channel，互不影响。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +15,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use super::forward::ForwardRegistry;
 use super::ssh::SshConnectParams;
 use super::ClientHandler;
 
@@ -52,9 +49,10 @@ fn emit_progress(app: &AppHandle, id: &str, stage: &str, message: impl Into<Stri
 pub struct SessionEntry {
     /// 可在不锁 Handle 的情况下读取的元数据。
     pub info: SessionInfo,
-    /// 认证后的连接句柄。`channel_open_session`/`data`/`disconnect` 都是 `&self`，
-    /// 但包一层 Mutex 便于将来需要 `&mut` 的操作，并序列化对同一连接的并发访问。
-    pub handle: Mutex<client::Handle<ClientHandler>>,
+    /// 认证后的连接句柄（`Arc`：Handle 不 Clone 但方法都是 `&self`，多方共享一份 clone）。
+    pub handle: Arc<client::Handle<ClientHandler>>,
+    /// 该连接的 `-R` 远程转发注册表（与 ClientHandler 共享同一 Arc）。
+    pub forward_registry: ForwardRegistry,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,9 +104,13 @@ impl SessionManager {
         // 2) SSH 握手（版本协商 + 密钥交换）
         emit_progress(app, connect_id, "handshake", "协商加密通道");
         let config = Arc::new(client::Config::default());
+        let forward_registry: ForwardRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let handler = ClientHandler {
+            forward_registry: forward_registry.clone(),
+        };
         let mut handle = tokio::time::timeout(
             HANDSHAKE_TTL,
-            client::connect_stream(config, socket, ClientHandler),
+            client::connect_stream(config, socket, handler),
         )
         .await
         .map_err(|_| anyhow::anyhow!("SSH 握手超时（{} 秒）", HANDSHAKE_TTL.as_secs()))?
@@ -145,14 +147,14 @@ impl SessionManager {
         };
         let entry = Arc::new(SessionEntry {
             info: info.clone(),
-            handle: Mutex::new(handle),
+            handle: Arc::new(handle),
+            forward_registry,
         });
         self.sessions.lock().await.insert(id, entry);
         Ok(info)
     }
 
     /// 取一个会话的共享句柄（Arc），调用方自行开 channel。
-    #[allow(dead_code)] // 交互式终端会用它开 PTY channel
     pub async fn get(&self, id: &str) -> Option<Arc<SessionEntry>> {
         self.sessions.lock().await.get(id).cloned()
     }
@@ -175,8 +177,8 @@ impl SessionManager {
             .await
             .remove(id)
             .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
-        let handle = entry.handle.lock().await;
-        handle
+        entry
+            .handle
             .disconnect(Disconnect::ByApplication, "bye", "en")
             .await?;
         Ok(())
