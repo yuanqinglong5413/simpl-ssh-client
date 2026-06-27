@@ -120,11 +120,13 @@ function highlightLogLine(line: string): string {
 
 /**
  * 创建流式日志高亮转换器。
- * 处理 WebSocket 分片数据，按行缓冲并在换行处注入颜色。
+ * 处理 WebSocket 分片数据，对完整行（含 \n）注入颜色。
+ *
+ * 不缓冲不完整行——交互式终端的回显和提示符需要实时显示，
+ * 缓冲会导致输入不可见直到按回车。只有完整行才做高亮处理，
+ * 不完整的尾部数据直接透传。
  */
 export function createLogHighlighter() {
-  let lineBuffer = "";
-
   /** 将二进制/字符串 chunk 转为高亮后的 Uint8Array */
   function transform(chunk: ArrayBuffer | string): Uint8Array {
     const text =
@@ -132,29 +134,29 @@ export function createLogHighlighter() {
         ? chunk
         : new TextDecoder("utf-8", { fatal: false }).decode(chunk);
 
-    lineBuffer += text;
     const parts: string[] = [];
     let lastIdx = 0;
 
-    for (let i = 0; i < lineBuffer.length; i++) {
-      if (lineBuffer[i] === "\n") {
-        const line = lineBuffer.slice(lastIdx, i + 1);
-        parts.push(highlightLogLine(line.slice(0, -1)) + "\n");
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "\n") {
+        // 完整行（含 \n）—— 高亮后输出
+        const line = text.slice(lastIdx, i);
+        parts.push(highlightLogLine(line) + "\n");
         lastIdx = i + 1;
       }
     }
 
-    lineBuffer = lineBuffer.slice(lastIdx);
-    const output = parts.join("");
-    return new TextEncoder().encode(output);
+    // 不完整的尾部数据（无 \n）直接透传，不缓冲
+    if (lastIdx < text.length) {
+      parts.push(text.slice(lastIdx));
+    }
+
+    return new TextEncoder().encode(parts.join(""));
   }
 
-  /** 刷新缓冲区中未完成的行（连接关闭时调用） */
+  /** flush 空操作——无缓冲区，所有数据已在 transform 中即时输出 */
   function flush(): Uint8Array {
-    if (!lineBuffer) return new Uint8Array(0);
-    const out = highlightLogLine(lineBuffer);
-    lineBuffer = "";
-    return new TextEncoder().encode(out);
+    return new Uint8Array(0);
   }
 
   return { transform, flush };
