@@ -18,8 +18,9 @@ use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
-    connect_and_exec, AuthMethod, HostKeyVerifier, MonitorSnapshot, MonitorStore, SessionInfo,
-    SessionManager, SshAuth, SshConnectParams, TerminalBridge, WorkspaceStore,
+    connect_and_exec, AuthMethod, HostKeyVerifier, LocalPtyRegistry, MonitorSnapshot, MonitorStore,
+    Project, ProjectInput, ProjectStore, SessionInfo, SessionManager, SshAuth, SshConnectParams,
+    TerminalBridge, WorkspaceStore,
 };
 
 // ==============================  SSH 会话  =================================
@@ -979,5 +980,193 @@ pub async fn git_worktree_remove(
         &format!("worktree remove {}", path),
     )
     .await?;
+    Ok(())
+}
+
+// ==============================  本地终端  =================================
+
+/// 在本地打开一个 PTY 终端，返回 WS 端口 + token。
+#[tauri::command]
+pub async fn local_terminal_open(
+    bridge: tauri::State<'_, Arc<TerminalBridge>>,
+    registry: tauri::State<'_, Arc<LocalPtyRegistry>>,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalHandle, String> {
+    crate::session::local_pty::open_local_terminal(
+        bridge.inner(),
+        registry.inner(),
+        cwd,
+        cols,
+        rows,
+    )
+    .await
+}
+
+// ==============================  项目管理  =================================
+
+#[tauri::command]
+pub async fn project_list(store: tauri::State<'_, ProjectStore>) -> Result<Vec<Project>, String> {
+    Ok(store.list().await)
+}
+
+#[tauri::command]
+pub async fn project_create(
+    store: tauri::State<'_, ProjectStore>,
+    input: ProjectInput,
+) -> Result<Project, String> {
+    store.create(input).await
+}
+
+#[tauri::command]
+pub async fn project_update(
+    store: tauri::State<'_, ProjectStore>,
+    id: String,
+    input: ProjectInput,
+) -> Result<Project, String> {
+    store.update(&id, input).await
+}
+
+#[tauri::command]
+pub async fn project_delete(
+    store: tauri::State<'_, ProjectStore>,
+    id: String,
+) -> Result<(), String> {
+    store.delete(&id).await
+}
+
+// ==============================  本地文件  =================================
+
+/// 列出本地目录内容。
+#[tauri::command]
+pub async fn local_list_dir(path: String) -> Result<Vec<FileEntry>, String> {
+    let mut entries = Vec::new();
+    let read_dir = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
+    for entry in read_dir.flatten() {
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        entries.push(FileEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_dir: metadata.is_dir(),
+            is_symlink: metadata.file_type().is_symlink(),
+            size: if metadata.is_file() {
+                metadata.len()
+            } else {
+                0
+            },
+            modified: metadata.modified().ok().map(|t| {
+                chrono::DateTime::<chrono::Local>::from(t)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            }),
+        });
+    }
+    // 目录在前，然后按名称排序
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+/// 读取本地文本文件。
+#[tauri::command]
+pub async fn local_read_file(path: String) -> Result<RemoteFileContent, String> {
+    let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if metadata.len() > 5 * 1024 * 1024 {
+        return Err("文件超过 5MB 上限".to_string());
+    }
+
+    let buf = std::fs::read(&path).map_err(|e| e.to_string())?;
+
+    // 检查是否为二进制
+    if buf.iter().take(1024).any(|&b| b == 0) {
+        return Err("不支持编辑二进制文件".to_string());
+    }
+
+    let content = String::from_utf8(buf).map_err(|_| "文件不是有效的 UTF-8 文本".to_string())?;
+
+    let modified = metadata.modified().ok().map(|t| {
+        chrono::DateTime::<chrono::Local>::from(t)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
+    });
+
+    Ok(RemoteFileContent {
+        path,
+        content,
+        size: metadata.len(),
+        modified,
+        encoding: "utf-8".to_string(),
+    })
+}
+
+/// 写入本地文本文件。
+#[tauri::command]
+pub async fn local_write_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+// ==============================  本地 Git  ================================
+
+/// 在本地路径执行 git 命令并返回输出。
+async fn exec_local_git(repo_path: &str, git_args: &str) -> Result<String, String> {
+    let output = tokio::process::Command::new("git")
+        .args(["-C", repo_path])
+        .args(git_args.split_whitespace())
+        .output()
+        .await
+        .map_err(|e| format!("git exec failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+pub async fn local_git_status(repo_path: String) -> Result<git_ops::GitStatusResult, String> {
+    let output = exec_local_git(&repo_path, "status --porcelain=v2 --branch").await?;
+    Ok(parse_status(&output))
+}
+
+#[tauri::command]
+pub async fn local_git_log(
+    repo_path: String,
+    limit: Option<u32>,
+) -> Result<Vec<git_ops::GitLogEntry>, String> {
+    let n = limit.unwrap_or(50);
+    let fmt = "--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%s";
+    let output = exec_local_git(&repo_path, &format!("log -{n} {fmt} --date=short")).await?;
+    Ok(parse_log(&output))
+}
+
+#[tauri::command]
+pub async fn local_git_diff(
+    repo_path: String,
+    file: String,
+) -> Result<git_ops::GitDiffResult, String> {
+    let output = exec_local_git(&repo_path, &format!("diff -- {file}")).await?;
+    Ok(git_ops::GitDiffResult {
+        path: file,
+        diff: output,
+    })
+}
+
+#[tauri::command]
+pub async fn local_git_branches(repo_path: String) -> Result<Vec<git_ops::GitBranch>, String> {
+    let output = exec_local_git(
+        &repo_path,
+        "branch --list --all --format=%(refname:short)%1f%(objectname:short)",
+    )
+    .await?;
+    Ok(parse_branches(&output))
+}
+
+#[tauri::command]
+pub async fn local_git_checkout(repo_path: String, branch: String) -> Result<(), String> {
+    exec_local_git(&repo_path, &format!("checkout {branch}")).await?;
     Ok(())
 }

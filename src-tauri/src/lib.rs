@@ -31,10 +31,13 @@ pub fn run() {
         .manage(session::HostKeyVerifier::default())
         .manage(session::MonitorStore::default())
         .manage(session::WorkspaceStore::default())
+        .manage(session::ProjectStore::default())
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
             app.manage(bridge);
+            // 本地 PTY 注册表
+            app.manage(std::sync::Arc::new(session::LocalPtyRegistry::default()));
             // 启动 SFTP 传输队列的串行 worker
             app.state::<session::TransferQueue>()
                 .start_worker(app.handle().clone());
@@ -86,6 +89,23 @@ pub fn run() {
             commands::git_worktree_list,
             commands::git_worktree_add,
             commands::git_worktree_remove,
+            // 本地终端
+            commands::local_terminal_open,
+            // 项目管理
+            commands::project_list,
+            commands::project_create,
+            commands::project_update,
+            commands::project_delete,
+            // 本地文件
+            commands::local_list_dir,
+            commands::local_read_file,
+            commands::local_write_file,
+            // 本地 Git
+            commands::local_git_status,
+            commands::local_git_log,
+            commands::local_git_diff,
+            commands::local_git_branches,
+            commands::local_git_checkout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
