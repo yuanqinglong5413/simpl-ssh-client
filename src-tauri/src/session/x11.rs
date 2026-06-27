@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use russh::ChannelMsg;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UnixStream};
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 
 /// 生成 16 字节 Xauth cookie（十六进制）。
 pub fn random_x11_cookie() -> String {
@@ -35,6 +37,7 @@ pub async fn bridge_x11_channel(channel: russh::Channel<russh::client::Msg>, dis
 
 enum X11Stream {
     Tcp(TcpStream),
+    #[cfg(unix)]
     Unix(UnixStream),
 }
 
@@ -42,6 +45,7 @@ impl X11Stream {
     async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Self::Tcp(s) => s.read(buf).await,
+            #[cfg(unix)]
             Self::Unix(s) => s.read(buf).await,
         }
     }
@@ -49,37 +53,55 @@ impl X11Stream {
     async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
         match self {
             Self::Tcp(s) => s.write_all(buf).await,
+            #[cfg(unix)]
             Self::Unix(s) => s.write_all(buf).await,
         }
     }
 }
 
 async fn connect_display(display: &str) -> Result<X11Stream, String> {
-    // Unix 路径形式（部分 macOS）
-    if display.starts_with('/') {
-        let s = UnixStream::connect(display)
-            .await
-            .map_err(|e| e.to_string())?;
-        return Ok(X11Stream::Unix(s));
+    #[cfg(unix)]
+    {
+        // Unix 路径形式（部分 macOS）
+        if display.starts_with('/') {
+            let s = UnixStream::connect(display)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(X11Stream::Unix(s));
+        }
+
+        // :0 或 :0.0 → /tmp/.X11-unix/X0
+        if display.starts_with(':') {
+            let n: u32 = display
+                .trim_start_matches(':')
+                .split('.')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let path = PathBuf::from(format!("/tmp/.X11-unix/X{n}"));
+            if path.exists() {
+                let s = UnixStream::connect(&path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return Ok(X11Stream::Unix(s));
+            }
+            // 回退 TCP 6000+n
+            let s = TcpStream::connect(("127.0.0.1", 6000 + n as u16))
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(X11Stream::Tcp(s));
+        }
     }
 
-    // :0 或 :0.0 → /tmp/.X11-unix/X0
+    #[cfg(not(unix))]
     if display.starts_with(':') {
-        let n: u32 = display
+        let n: u16 = display
             .trim_start_matches(':')
             .split('.')
             .next()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let path = PathBuf::from(format!("/tmp/.X11-unix/X{n}"));
-        if path.exists() {
-            let s = UnixStream::connect(&path)
-                .await
-                .map_err(|e| e.to_string())?;
-            return Ok(X11Stream::Unix(s));
-        }
-        // 回退 TCP 6000+n
-        let s = TcpStream::connect(("127.0.0.1", 6000 + n as u16))
+        let s = TcpStream::connect(("127.0.0.1", 6000 + n))
             .await
             .map_err(|e| e.to_string())?;
         return Ok(X11Stream::Tcp(s));
