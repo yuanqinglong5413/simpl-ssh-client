@@ -176,10 +176,9 @@ pub fn parse_status(raw: &str) -> GitStatusResult {
                     });
                 }
             }
-        } else if line.starts_with("? ") {
-            let path = line[2..].to_string();
+        } else if let Some(path) = line.strip_prefix("? ") {
             files.push(GitFileStatus {
-                path,
+                path: path.to_string(),
                 status: "untracked".to_string(),
                 staged: false,
             });
