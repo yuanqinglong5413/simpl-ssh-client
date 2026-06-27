@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 use tokio::sync::Mutex;
+use tokio::time::timeout;
+use std::time::Duration;
 
 use super::manager::SessionManager;
 
@@ -93,27 +95,36 @@ async fn exec_on_session(
         .map_err(|e| e.to_string())?;
 
     let mut out = String::new();
-    while let Some(msg) = channel.wait().await {
-        use russh::ChannelMsg;
-        match msg {
-            ChannelMsg::Data { data } => {
-                out.push_str(&String::from_utf8_lossy(&data));
-            }
-            ChannelMsg::ExtendedData { data, .. } => {
-                out.push_str(&String::from_utf8_lossy(&data));
-            }
-            ChannelMsg::ExitStatus { exit_status } => {
-                if exit_status != 0 {
-                    return Err(format!(
-                        "远程监控脚本退出码 {exit_status}（可能非 Linux 主机）"
-                    ));
+    // 15 秒超时：防止远程命令挂起导致监控面板卡死
+    let channel_result = timeout(Duration::from_secs(15), async {
+        while let Some(msg) = channel.wait().await {
+            use russh::ChannelMsg;
+            match msg {
+                ChannelMsg::Data { data } => {
+                    out.push_str(&String::from_utf8_lossy(&data));
                 }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    out.push_str(&String::from_utf8_lossy(&data));
+                }
+                ChannelMsg::ExitStatus { exit_status } => {
+                    if exit_status != 0 {
+                        return Err(format!(
+                            "远程监控脚本退出码 {exit_status}（可能非 Linux 主机）"
+                        ));
+                    }
+                }
+                ChannelMsg::Eof => break,
+                _ => {}
             }
-            ChannelMsg::Eof => break,
-            _ => {}
         }
+        Ok(())
+    })
+    .await;
+
+    match channel_result {
+        Ok(inner) => inner.map(|_| out),
+        Err(_) => Err("监控命令超时（15s），请检查网络连接或主机负载".to_string()),
     }
-    Ok(out)
 }
 
 async fn parse_snapshot(
