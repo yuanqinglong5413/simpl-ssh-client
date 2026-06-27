@@ -1682,6 +1682,10 @@ input {
   font-size: 11px;
   color: var(--muted);
 }
+.monitor-updated {
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
 
 /* ===========================  目录同步  ================================= */
 .sync-overlay {

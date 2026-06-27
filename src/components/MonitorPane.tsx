@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Activity, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { MonitorSnapshot } from "../types";
@@ -58,20 +58,22 @@ export function MonitorPane({ sessionId }: Props) {
   const [snap, setSnap] = useState<MonitorSnapshot | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     try {
       const data = await invoke<MonitorSnapshot>("monitor_snapshot", {
         sessionId,
       });
       setSnap(data);
       setError("");
+      setLastUpdated(Date.now());
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }
+  }, [sessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,7 +87,7 @@ export function MonitorPane({ sessionId }: Props) {
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionId]);
+  }, [refresh]);
 
   const memPct =
     snap && snap.mem_total_bytes > 0
@@ -174,6 +176,11 @@ export function MonitorPane({ sessionId }: Props) {
 
       <p className="monitor-hint">
         基于 Linux /proc 与 df 采集；首次 CPU 采样需等待下一轮刷新。
+        {lastUpdated && (
+          <span className="monitor-updated">
+            {" "}· 上次更新 {new Date(lastUpdated).toLocaleTimeString()}
+          </span>
+        )}
       </p>
     </div>
   );

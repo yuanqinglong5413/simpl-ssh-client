@@ -38,8 +38,10 @@ export function useWorkspaceRestore({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ---- 启动时恢复 ----
+  // 依赖 profiles：profiles 异步加载，未就绪时跳过，加载完成后触发恢复
   useEffect(() => {
     if (restoredRef.current) return;
+    if (profiles.length === 0) return; // 等待 profiles 加载完成
     restoredRef.current = true;
 
     (async () => {
@@ -113,8 +115,7 @@ export function useWorkspaceRestore({
         // workspace.json 损坏或解析失败，静默忽略
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [profiles]);
 
   // ---- tabs 变化时 debounce 保存 ----
   useEffect(() => {

@@ -146,7 +146,8 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [onConnectionLost, paneId, sessionId, terminalTheme]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onConnectionLost, paneId, sessionId]);
 
   useEffect(() => {
     const term = termRef.current;
