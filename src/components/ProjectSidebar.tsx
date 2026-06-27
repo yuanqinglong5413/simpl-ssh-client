@@ -8,6 +8,7 @@ type Props = {
   projects: Project[];
   onConnectProject: (project: Project) => void;
   onDeleteProject: (id: string) => void;
+  onSaved?: () => void;
 };
 
 /**
@@ -17,6 +18,7 @@ export function ProjectSidebar({
   projects,
   onConnectProject,
   onDeleteProject,
+  onSaved,
 }: Props) {
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -106,6 +108,7 @@ export function ProjectSidebar({
             }
             setShowCreate(false);
             setEditTarget(null);
+            onSaved?.();
           }}
         />
       )}
@@ -126,6 +129,7 @@ function ProjectDialog({
   const [name, setName] = useState(project?.name ?? "");
   const [localPath, setLocalPath] = useState(project?.local_path ?? "");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   async function pickFolder() {
     const selected = await open({ directory: true, multiple: false });
@@ -138,6 +142,7 @@ function ProjectDialog({
   async function handleSave() {
     if (!name.trim() || !localPath.trim()) return;
     setSaving(true);
+    setError("");
     try {
       await onSave({
         name: name.trim(),
@@ -146,7 +151,7 @@ function ProjectDialog({
         linked_profiles: project?.linked_profiles ?? [],
       });
     } catch (e) {
-      console.error("project save error:", e);
+      setError(String(e));
     }
     setSaving(false);
   }
@@ -154,34 +159,39 @@ function ProjectDialog({
   return (
     <div className="overlay" onClick={onClose}>
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <h3 className="dialog-title">
-          <FolderPlus size={16} />
-          {project ? "编辑项目" : "新建项目"}
-        </h3>
-        <label className="form-label">
-          名称
-          <input
-            className="form-input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="项目名称"
-          />
-        </label>
-        <label className="form-label">
-          本地路径
-          <div className="path-row">
+        <div className="dialog-head">
+          <h3 className="dialog-title">
+            <FolderPlus size={16} />
+            {project ? "编辑项目" : "新建项目"}
+          </h3>
+        </div>
+        <div className="dialog-body">
+          <label className="form-label">
+            名称
             <input
               className="form-input"
-              value={localPath}
-              onChange={(e) => setLocalPath(e.target.value)}
-              placeholder="/path/to/project"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="项目名称"
             />
-            <button className="btn btn-ghost" onClick={pickFolder} title="选择目录">
-              <Folder size={15} />
-            </button>
-          </div>
-        </label>
-        <div className="dialog-actions">
+          </label>
+          <label className="form-label">
+            本地路径
+            <div className="path-row">
+              <input
+                className="form-input"
+                value={localPath}
+                onChange={(e) => setLocalPath(e.target.value)}
+                placeholder="/path/to/project"
+              />
+              <button className="btn btn-ghost" onClick={pickFolder} title="选择目录">
+                <Folder size={15} />
+              </button>
+            </div>
+          </label>
+          {error && <div className="form-error">{error}</div>}
+        </div>
+        <div className="dialog-foot">
           <button className="btn btn-ghost" onClick={onClose}>
             取消
           </button>

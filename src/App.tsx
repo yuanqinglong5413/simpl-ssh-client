@@ -592,6 +592,7 @@ function App() {
           projects={projects}
           onConnectProject={openLocalTerminal}
           onDeleteProject={deleteProject}
+          onSaved={refreshProjects}
         />
       )}
 
@@ -607,7 +608,7 @@ function App() {
           activeTabId={activeTabId}
           onActivate={setActiveTabId}
           onClose={closeTab}
-          onNew={() => mode === "ssh" ? setShowConnect(true) : undefined}
+          onNew={mode === "ssh" ? () => setShowConnect(true) : undefined}
         />
 
         <main className="main">
@@ -616,9 +617,13 @@ function App() {
               <div className="empty-icon">
                 <TerminalIcon size={26} />
               </div>
-              <div className="empty-title">还没有打开的终端</div>
+              <div className="empty-title">
+                {mode === "ssh" ? "还没有打开的终端" : "还没有打开的项目终端"}
+              </div>
               <div className="empty-hint">
-                从左侧选一个连接（终端 / 文件），或点 + 新建一个
+                {mode === "ssh"
+                  ? "从左侧选一个连接（终端 / 文件），或点 + 新建一个"
+                  : "从左侧双击一个项目，或点击 + 新建项目"}
               </div>
             </div>
           ) : (

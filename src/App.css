@@ -666,6 +666,45 @@ input {
   line-height: 1.4;
 }
 
+/* ---- 表单组件 ---- */
+.form-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+  margin-bottom: var(--gap-md);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.form-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-family: var(--font-ui);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.form-input:focus {
+  border-color: var(--accent);
+}
+.form-error {
+  padding: 7px 10px;
+  background: var(--red-soft);
+  border: 1px solid rgba(255, 92, 92, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--red);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--gap-sm);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--gap-sm);
+  padding-top: var(--gap-sm);
+}
+
 /* ---- 浮层提示 ---- */
 .toast {
   position: fixed;

@@ -6,7 +6,7 @@ type Props = {
   activeTabId: string | null;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
-  onNew: () => void;
+  onNew?: () => void;
 };
 
 export function TabBar({
@@ -52,9 +52,11 @@ export function TabBar({
         </div>
       ))}
       <div className="tab-spacer" />
-      <button className="tab-new" onClick={onNew} title="新建连接">
-        <Plus size={16} />
-      </button>
+      {onNew && (
+        <button className="tab-new" onClick={onNew} title="新建连接">
+          <Plus size={16} />
+        </button>
+      )}
     </div>
   );
 }
