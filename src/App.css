@@ -5,38 +5,54 @@
 
 :root {
   /* 表面 — 默认值，ThemeProvider 会在运行时覆盖 */
-  --bg: #0b0d12;
-  --panel: #11141c;
+  --bg: #0a0c10;
+  --panel: #10131a;
   --panel-2: #161a24;
-  --panel-3: #1c2230;
-  --border: #232838;
+  --panel-3: #1e2433;
+  --border: #252b3d;
   --border-soft: #1a1f2b;
 
   /* 文字 */
-  --text: #e6e9f0;
-  --text-dim: #a8aec0;
+  --text: #e8ebf2;
+  --text-dim: #b0b8cc;
   --muted: #6b7388;
   --fg: var(--text);
 
   /* 强调 / 语义 */
-  --accent: #ff9f1c;
-  --accent-hover: #ffb13d;
-  --accent-soft: rgba(255, 159, 28, 0.12);
+  --accent: #ffa726;
+  --accent-hover: #ffb84d;
+  --accent-soft: rgba(255, 167, 38, 0.12);
   --green: #3fd9a0;
   --green-soft: rgba(63, 217, 160, 0.14);
   --red: #ff5c5c;
   --red-soft: rgba(255, 92, 92, 0.12);
 
   /* 扩展语义色 */
-  --scrollbar-hover: #2f3650;
+  --scrollbar-hover: #323a55;
   --overlay-bg: rgba(5, 7, 11, 0.62);
   --brand-mark-fg: #1a1205;
   --btn-primary-fg: #1a1205;
 
+  /* 间距阶梯 */
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 16px;
+  --gap-xl: 24px;
+
+  /* 字体大小阶梯 */
+  --fs-xs: 10px;
+  --fs-sm: 11px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+
   /* 尺寸 */
-  --sidebar-w: 256px;
-  --topbar-h: 42px;
-  --status-h: 28px;
+  --sidebar-w: 280px;
+  --topbar-h: 38px;
+  --status-h: 30px;
+  --radius: 8px;
+  --radius-sm: 6px;
 
   /* 字体 */
   --font-ui: "IBM Plex Sans Variable", "IBM Plex Sans", system-ui, -apple-system,
@@ -80,8 +96,8 @@ input {
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;

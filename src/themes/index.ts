@@ -404,32 +404,127 @@ const ANSI_HIGH_CONTRAST: AnsiPalette = {
   brightWhite: "#ffffff",
 };
 
-/* ------------------------------------------------------------------ 20 套主题 */
+const ANSI_CATPPUCCIN_FRAPPE: AnsiPalette = {
+  black: "#51576d",
+  red: "#e78284",
+  green: "#a6d189",
+  yellow: "#e5c890",
+  blue: "#8caaee",
+  magenta: "#f4b8e4",
+  cyan: "#81c8be",
+  white: "#b5bfe2",
+  brightBlack: "#626880",
+  brightRed: "#e78284",
+  brightGreen: "#a6d189",
+  brightYellow: "#e5c890",
+  brightBlue: "#8caaee",
+  brightMagenta: "#f4b8e4",
+  brightCyan: "#81c8be",
+  brightWhite: "#ffffff",
+};
+
+const ANSI_CATPPUCCIN_MACCHIATO: AnsiPalette = {
+  black: "#494d64",
+  red: "#ed8796",
+  green: "#a6da95",
+  yellow: "#eed49f",
+  blue: "#8aadf4",
+  magenta: "#f5bde6",
+  cyan: "#8bd5ca",
+  white: "#cad3f5",
+  brightBlack: "#5b6078",
+  brightRed: "#ed8796",
+  brightGreen: "#a6da95",
+  brightYellow: "#eed49f",
+  brightBlue: "#8aadf4",
+  brightMagenta: "#f5bde6",
+  brightCyan: "#8bd5ca",
+  brightWhite: "#ffffff",
+};
+
+const ANSI_MACOS_DARK: AnsiPalette = {
+  black: "#1d1f21",
+  red: "#cc6666",
+  green: "#b5bd68",
+  yellow: "#f0c674",
+  blue: "#81a2be",
+  magenta: "#b294bb",
+  cyan: "#8abeb7",
+  white: "#c5c8c6",
+  brightBlack: "#969896",
+  brightRed: "#cc6666",
+  brightGreen: "#b5bd68",
+  brightYellow: "#f0c674",
+  brightBlue: "#81a2be",
+  brightMagenta: "#b294bb",
+  brightCyan: "#8abeb7",
+  brightWhite: "#ffffff",
+};
+
+const ANSI_MACOS_LIGHT: AnsiPalette = {
+  black: "#3a3a3a",
+  red: "#c91b00",
+  green: "#749836",
+  yellow: "#a36f1f",
+  blue: "#1c5093",
+  magenta: "#88297a",
+  cyan: "#1a6e6e",
+  white: "#565656",
+  brightBlack: "#7a7a7a",
+  brightRed: "#e02d1c",
+  brightGreen: "#92b95a",
+  brightYellow: "#c08a30",
+  brightBlue: "#336fb3",
+  brightMagenta: "#a73fa3",
+  brightCyan: "#2e8e8e",
+  brightWhite: "#7a7a7a",
+};
+
+const ANSI_GITHUB_LIGHT: AnsiPalette = {
+  black: "#24292e",
+  red: "#d73a49",
+  green: "#28a745",
+  yellow: "#dbab09",
+  blue: "#0366d6",
+  magenta: "#5a32a3",
+  cyan: "#0598bc",
+  white: "#6a737d",
+  brightBlack: "#959da5",
+  brightRed: "#cb2431",
+  brightGreen: "#22863a",
+  brightYellow: "#b08800",
+  brightBlue: "#005cc5",
+  brightMagenta: "#5a32a3",
+  brightCyan: "#3192aa",
+  brightWhite: "#d1d5da",
+};
+
+/* ------------------------------------------------------------------ 26 套主题 */
 
 export const themes: AppTheme[] = [
-  // 1. 默认：深墨 + 琥珀（当前设计）
+  // 1. 默认：深墨 + 琥珀（CRT 致敬，调优版）
   makeTheme(
     "ink-amber",
     "深墨琥珀",
     buildAppVars({
-      bg: "#0b0d12",
-      panel: "#11141c",
+      bg: "#0a0c10",
+      panel: "#10131a",
       panel2: "#161a24",
-      panel3: "#1c2230",
-      border: "#232838",
+      panel3: "#1e2433",
+      border: "#252b3d",
       borderSoft: "#1a1f2b",
-      text: "#e6e9f0",
-      textDim: "#a8aec0",
+      text: "#e8ebf2",
+      textDim: "#b0b8cc",
       muted: "#6b7388",
-      accent: "#ff9f1c",
-      accentHover: "#ffb13d",
+      accent: "#ffa726",
+      accentHover: "#ffb84d",
       green: "#3fd9a0",
       red: "#ff5c5c",
-      scrollbarHover: "#2f3650",
+      scrollbarHover: "#323a55",
       brandMarkFg: "#1a1205",
       btnPrimaryFg: "#1a1205",
     }),
-    buildTerminalTheme("#0b0d12", "#e6e9f0", "#ff9f1c", "#ff9f1c", ANSI_DEFAULT)
+    buildTerminalTheme("#0a0c10", "#e8ebf2", "#ffa726", "#ffa726", ANSI_DEFAULT)
   ),
 
   // 2. Dracula
@@ -881,6 +976,133 @@ export const themes: AppTheme[] = [
       btnPrimaryFg: "#000000",
     }),
     buildTerminalTheme("#000000", "#ffffff", "#ffff00", "#ffff00", ANSI_HIGH_CONTRAST)
+  ),
+
+  // 22. macOS Dark
+  makeTheme(
+    "macos-dark",
+    "macOS Dark",
+    buildAppVars({
+      bg: "#1e1e1e",
+      panel: "#252526",
+      panel2: "#2d2d2d",
+      panel3: "#333334",
+      border: "#3d3d3d",
+      borderSoft: "#2a2a2a",
+      text: "#e5e5e5",
+      textDim: "#a8a8a8",
+      muted: "#808080",
+      accent: "#0a84ff",
+      accentHover: "#3d9bff",
+      green: "#30d158",
+      red: "#ff453a",
+      scrollbarHover: "#4a4a4a",
+      brandMarkFg: "#ffffff",
+      btnPrimaryFg: "#ffffff",
+    }),
+    buildTerminalTheme("#1e1e1e", "#e5e5e5", "#0a84ff", "#0a84ff", ANSI_MACOS_DARK)
+  ),
+
+  // 23. macOS Light
+  makeTheme(
+    "macos-light",
+    "macOS Light",
+    buildAppVars({
+      bg: "#ffffff",
+      panel: "#f6f6f6",
+      panel2: "#ececec",
+      panel3: "#e2e2e2",
+      border: "#d1d1d1",
+      borderSoft: "#e0e0e0",
+      text: "#1d1d1f",
+      textDim: "#6e6e73",
+      muted: "#9a9a9e",
+      accent: "#007aff",
+      accentHover: "#0051b5",
+      green: "#34c759",
+      red: "#ff3b30",
+      scrollbarHover: "#c1c1c1",
+      brandMarkFg: "#ffffff",
+      btnPrimaryFg: "#ffffff",
+    }),
+    buildTerminalTheme("#ffffff", "#1d1d1f", "#007aff", "#007aff", ANSI_MACOS_LIGHT),
+    true
+  ),
+
+  // 24. GitHub Light
+  makeTheme(
+    "github-light",
+    "GitHub Light",
+    buildAppVars({
+      bg: "#ffffff",
+      panel: "#f6f8fa",
+      panel2: "#eaeef2",
+      panel3: "#d0d7de",
+      border: "#d0d7de",
+      borderSoft: "#eaeef2",
+      text: "#1f2328",
+      textDim: "#656d76",
+      muted: "#8c959f",
+      accent: "#0969da",
+      accentHover: "#0550ae",
+      green: "#1a7f37",
+      red: "#cf222e",
+      scrollbarHover: "#afb8c1",
+      brandMarkFg: "#ffffff",
+      btnPrimaryFg: "#ffffff",
+    }),
+    buildTerminalTheme("#ffffff", "#1f2328", "#0969da", "#0969da", ANSI_GITHUB_LIGHT),
+    true
+  ),
+
+  // 25. Catppuccin Frappe
+  makeTheme(
+    "catppuccin-frappe",
+    "Catppuccin Frappe",
+    buildAppVars({
+      bg: "#303446",
+      panel: "#292c3c",
+      panel2: "#343a4d",
+      panel3: "#3b404f",
+      border: "#414559",
+      borderSoft: "#2c2f40",
+      text: "#c6d0f5",
+      textDim: "#a5adce",
+      muted: "#838ba7",
+      accent: "#ca9ee6",
+      accentHover: "#d4b0ee",
+      green: "#a6d189",
+      red: "#e78284",
+      scrollbarHover: "#51576d",
+      brandMarkFg: "#303446",
+      btnPrimaryFg: "#303446",
+    }),
+    buildTerminalTheme("#303446", "#c6d0f5", "#ca9ee6", "#ca9ee6", ANSI_CATPPUCCIN_FRAPPE)
+  ),
+
+  // 26. Catppuccin Macchiato
+  makeTheme(
+    "catppuccin-macchiato",
+    "Catppuccin Macchiato",
+    buildAppVars({
+      bg: "#24273a",
+      panel: "#1e2034",
+      panel2: "#272a3f",
+      panel3: "#2e3144",
+      border: "#363a4f",
+      borderSoft: "#252837",
+      text: "#cad3f5",
+      textDim: "#a5adcb",
+      muted: "#8087a2",
+      accent: "#c6a0f6",
+      accentHover: "#d0b4f8",
+      green: "#a6da95",
+      red: "#ed8796",
+      scrollbarHover: "#494d64",
+      brandMarkFg: "#24273a",
+      btnPrimaryFg: "#24273a",
+    }),
+    buildTerminalTheme("#24273a", "#cad3f5", "#c6a0f6", "#c6a0f6", ANSI_CATPPUCCIN_MACCHIATO)
   ),
 ];
 
