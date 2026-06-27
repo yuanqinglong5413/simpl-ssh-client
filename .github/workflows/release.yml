@@ -58,6 +58,33 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      # Updater 私钥未配置或格式无效时关闭产物生成，避免 Release 打包失败
+      - name: Prepare updater signing options
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          UPDATER_OK=false
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            if printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | grep -q "untrusted comment"; then
+              UPDATER_OK=true
+            elif printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | base64 -d 2>/dev/null | grep -q "untrusted comment"; then
+              UPDATER_OK=true
+            fi
+          fi
+          if [ "$UPDATER_OK" != "true" ]; then
+            echo "Updater 签名密钥未配置或格式无效，关闭 createUpdaterArtifacts / latest.json。"
+            node -e "
+              const fs = require('fs');
+              const p = 'src-tauri/tauri.conf.json';
+              const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+              c.bundle.createUpdaterArtifacts = false;
+              fs.writeFileSync(p, JSON.stringify(c, null, 2) + '\n');
+            "
+            echo "INCLUDE_UPDATER_JSON=false" >> "$GITHUB_ENV"
+          else
+            echo "INCLUDE_UPDATER_JSON=true" >> "$GITHUB_ENV"
+          fi
+
       # macOS：导入 Developer ID 证书到临时钥匙串，供 codesign / notarize 使用。
       # 未配置 APPLE_CERTIFICATE 时跳过，仍产出未签名包（与 v0.7.x 行为一致）。
       - name: Import Apple Developer certificate (macOS)
@@ -102,14 +129,23 @@ jobs:
           printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$KEY_PATH"
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
+      # 证书已在上方导入钥匙串；无证书时用 ad-hoc 签名（-），避免 tauri 再次 security import 空 secret
+      - name: Configure macOS codesign identity
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ "${MACOS_SIGNED:-false}" = "true" ] && [ -n "$APPLE_SIGNING_IDENTITY_SECRET" ]; then
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY_SECRET" >> "$GITHUB_ENV"
+          else
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # macOS codesign + notarize（secrets 为空时 tauri-action 回退为未签名构建）
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -123,12 +159,12 @@ jobs:
             在下方 **Assets** 选择对应平台的安装包下载。
             - macOS：`.dmg`（Apple Silicon 选 aarch64，Intel 选 x64）
               - 已配置 Apple Secrets 时：Developer ID 签名 + Apple 公证，可直接双击安装
-              - 未配置 Secrets 时：包未签名，若 Gatekeeper 提示「已损坏」执行 `xattr -cr "/Applications/Simpl SSH.app"`
+              - 未配置 Secrets 时：ad-hoc 签名，若 Gatekeeper 提示「已损坏」执行 `xattr -cr "/Applications/Simpl SSH.app"`
             - Windows：`-setup.exe` 或 `.msi`
             - Linux：`.AppImage` 或 `.deb`
 
             变更说明见 [CHANGELOG](https://github.com/yuanqinglong5413/simpl-ssh-client/blob/main/CHANGELOG.md)。
-          includeUpdaterJson: true
+          includeUpdaterJson: ${{ env.INCLUDE_UPDATER_JSON != 'false' }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

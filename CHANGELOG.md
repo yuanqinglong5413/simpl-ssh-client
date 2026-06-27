@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-27
+
+### 修复
+- **Windows Release 构建**：X11 模块 `UnixStream` 仅在 Unix 平台编译，修复 Windows 交叉编译失败。
+- **Release 流水线**：Updater 私钥无效时自动关闭 `createUpdaterArtifacts`；macOS 无证书时使用 ad-hoc 签名（`-`），不再向 tauri 传递空的 `APPLE_CERTIFICATE`。
+
 ## [0.8.0] - 2026-06-26
 
 ### 新增
@@ -118,7 +124,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.5.0...v0.6.0
