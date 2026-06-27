@@ -26,10 +26,16 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 用 ref 存储 onConnectionLost，避免其引用变化导致 useEffect 重跑（重建终端+WS）
+  const connLostRef = useRef(onConnectionLost);
+  connLostRef.current = onConnectionLost;
   const [ready, setReady] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const { terminalTheme } = useTheme();
   const { settings } = useSettings();
+  // settings 也用 ref，保持 useEffect 依赖最小化
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -104,7 +110,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
       sessionId,
       cols: term.cols,
       rows: term.rows,
-      enableX11: settings.enableX11,
+      enableX11: settingsRef.current.enableX11,
     })
       .then((handle) => {
         if (disposed) return;
@@ -126,7 +132,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
           }
         };
         ws.onclose = () => {
-          if (!disposed) onConnectionLost?.(sessionId);
+          if (!disposed) connLostRef.current?.(sessionId);
         };
       })
       .catch((e) => {
@@ -147,7 +153,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
       fitRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onConnectionLost, paneId, sessionId]);
+  }, [paneId, sessionId]);
 
   useEffect(() => {
     const term = termRef.current;
