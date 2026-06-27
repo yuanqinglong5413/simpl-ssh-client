@@ -55,11 +55,24 @@
 | Windows | `*-setup.exe` / `*.msi` |
 | Linux | `*.AppImage` / `*.deb` |
 
-> macOS：当前 release 未做 Apple 公证（unsigned）。下载后首次打开若提示「已损坏，无法打开」或「无法验证开发者」，在终端执行（按实际安装路径调整）清除隔离属性后即可：
+> macOS：v0.8.0 起 Release 流水线已接入 **Developer ID 签名 + Apple 公证**。在 GitHub 仓库配置 Apple Secrets 后打 tag 发布的 `.dmg` 可直接双击安装，无需 `xattr`。
+>
+> 若尚未配置 Secrets（或下载的是旧版未签名包），Gatekeeper 可能提示「已损坏，无法打开」，在终端执行（按实际安装路径调整）即可：
 > ```bash
 > xattr -cr "/Applications/Simpl SSH.app"
 > ```
-> 这是 macOS Gatekeeper 拦截未签名 app 的常规处理，并非文件真的损坏。正式公证（codesign + notarize）在路线图中。
+>
+> **维护者需在仓库 Settings → Secrets 配置以下项（codesign 必填，公证二选一）：**
+>
+> | Secret | 说明 |
+> |--------|------|
+> | `APPLE_CERTIFICATE` | base64 编码的 Developer ID `.p12` |
+> | `APPLE_CERTIFICATE_PASSWORD` | `.p12` 导出密码 |
+> | `APPLE_SIGNING_IDENTITY` | 如 `Developer ID Application: Your Name (TEAMID)` |
+> | `KEYCHAIN_PASSWORD` | CI 临时钥匙串密码（任意强密码） |
+> | `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID` | Apple ID 公证（`APPLE_PASSWORD` 为 App 专用密码） |
+> | 或 `APPLE_API_ISSUER` + `APPLE_API_KEY` + `APPLE_API_PRIVATE_KEY` | App Store Connect API 公证 |
+> | `TAURI_SIGNING_PRIVATE_KEY` | 自动更新包签名私钥（与 `tauri.conf.json` 公钥配对） |
 
 ## 🛠 从源码构建
 
@@ -132,8 +145,10 @@ simpl-ssh-client/
 - [x] **SFTP 传输队列**（排队 / 取消 / 非阻塞）
 - [x] **端口转发**（本地 -L / 远程 -R / 动态 SOCKS5 -D）
 - [x] **主机公钥校验**（known_hosts：TOFU + 变更检测，兼容 OpenSSH）
-- [ ] macOS 公证（codesign + notarize，消除「已损坏」提示）
-- [ ] 连接分组树、系统监控、跳板机
+- [x] **macOS 公证**（Release CI：codesign + notarize，需配置 Apple Secrets）
+- [x] 连接分组树、断线重连、全局快捷键、设置面板
+- [x] 跳板机（ProxyJump）、系统监控面板
+- [x] X11 转发、目录同步、自动更新
 
 详见 [docs/DESIGN.md](docs/DESIGN.md)。
 

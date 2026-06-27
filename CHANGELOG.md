@@ -6,8 +6,13 @@
 
 ## [Unreleased]
 
-### 计划中
-- macOS 公证（codesign + notarize）
+## [0.8.0] - 2026-06-26
+
+### 新增
+- **macOS 公证流水线**：Release 工作流接入 Developer ID codesign + Apple notarize；新增 `Entitlements.plist`（WebView JIT 权限）；未配置 Apple Secrets 时仍产出未签名包，行为与 v0.7.x 兼容。
+
+### 变更
+- Release 页 macOS 安装说明：已配置 Secrets 时可直接安装；未配置时保留 `xattr -cr` 兜底提示。
 
 ## [0.7.0] - 2026-06-26
 
@@ -113,7 +118,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.4.0...v0.5.0
