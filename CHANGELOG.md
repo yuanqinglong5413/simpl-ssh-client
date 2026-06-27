@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-06-27
+
+### 修复
+- **macOS Release**：tauri-action 不再传递空的 `APPLE_ID` / `APPLE_TEAM_ID` 等 env（空字符串会误触发公证）。
+
 ## [0.8.2] - 2026-06-27
 
 ### 修复
@@ -129,7 +134,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.7.0...v0.8.0
