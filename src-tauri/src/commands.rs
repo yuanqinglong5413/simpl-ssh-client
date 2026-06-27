@@ -8,6 +8,10 @@ use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::session::forward::{ForwardKind, PortForwardManager};
+use crate::session::git_ops;
+use crate::session::git_ops::{
+    exec_git, parse_branches, parse_diff, parse_log, parse_status, parse_worktrees,
+};
 use crate::session::groups::GroupStore;
 use crate::session::profile::{ProfileInput, ProfileStore};
 use crate::session::pty::TerminalPipes;
@@ -17,8 +21,6 @@ use crate::session::{
     connect_and_exec, AuthMethod, HostKeyVerifier, MonitorSnapshot, MonitorStore, SessionInfo,
     SessionManager, SshAuth, SshConnectParams, TerminalBridge, WorkspaceStore,
 };
-use crate::session::git_ops;
-use crate::session::git_ops::{exec_git, parse_branches, parse_diff, parse_log, parse_status, parse_worktrees};
 
 // ==============================  SSH 会话  =================================
 
@@ -304,19 +306,18 @@ pub async fn sftp_read_file(
         ));
     }
 
-    let modified = metadata
-        .modified()
-        .ok()
-        .map(|t| {
-            chrono::DateTime::<chrono::Local>::from(t)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        });
+    let modified = metadata.modified().ok().map(|t| {
+        chrono::DateTime::<chrono::Local>::from(t)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
+    });
 
     // 读取文件内容
     let mut file = sftp.open(&path).await.map_err(|e| e.to_string())?;
     let mut buf = Vec::with_capacity(size as usize);
-    file.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
+    file.read_to_end(&mut buf)
+        .await
+        .map_err(|e| e.to_string())?;
     drop(file);
 
     // 检查是否为二进制文件
@@ -324,8 +325,7 @@ pub async fn sftp_read_file(
         return Err("不支持编辑二进制文件".to_string());
     }
 
-    let content = String::from_utf8(buf)
-        .map_err(|_| "文件不是有效的 UTF-8 文本".to_string())?;
+    let content = String::from_utf8(buf).map_err(|_| "文件不是有效的 UTF-8 文本".to_string())?;
 
     Ok(RemoteFileContent {
         path,
@@ -820,9 +820,7 @@ pub async fn workspace_load(
 
 /// 清空工作区快照（用户手动 "不恢复" 时调用）。
 #[tauri::command]
-pub async fn workspace_clear(
-    ws: tauri::State<'_, WorkspaceStore>,
-) -> Result<(), String> {
+pub async fn workspace_clear(ws: tauri::State<'_, WorkspaceStore>) -> Result<(), String> {
     ws.clear().await
 }
 
@@ -839,12 +837,7 @@ pub async fn git_status(
         .get(&session_id)
         .await
         .ok_or_else(|| format!("session not found: {session_id}"))?;
-    let output = exec_git(
-        &entry.handle,
-        &repo_path,
-        "status --porcelain=v2 --branch",
-    )
-    .await?;
+    let output = exec_git(&entry.handle, &repo_path, "status --porcelain=v2 --branch").await?;
     Ok(parse_status(&output))
 }
 
@@ -927,12 +920,7 @@ pub async fn git_checkout(
         .get(&session_id)
         .await
         .ok_or_else(|| format!("session not found: {session_id}"))?;
-    exec_git(
-        &entry.handle,
-        &repo_path,
-        &format!("checkout {}", branch),
-    )
-    .await?;
+    exec_git(&entry.handle, &repo_path, &format!("checkout {}", branch)).await?;
     Ok(())
 }
 

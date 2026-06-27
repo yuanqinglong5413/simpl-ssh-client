@@ -22,7 +22,7 @@ pub struct GitStatusResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct GitFileStatus {
     pub path: String,
-    pub status: String,       // "modified" | "added" | "deleted" | "untracked" | "renamed"
+    pub status: String, // "modified" | "added" | "deleted" | "untracked" | "renamed"
     pub staged: bool,
 }
 
@@ -67,11 +67,7 @@ pub(crate) async fn exec_git(
     repo_path: &str,
     git_args: &str,
 ) -> Result<String, String> {
-    let cmd = format!(
-        "cd {} && git {}",
-        shellescape(repo_path),
-        git_args
-    );
+    let cmd = format!("cd {} && git {}", shellescape(repo_path), git_args);
     exec_on_session(handle, &cmd).await
 }
 
@@ -151,7 +147,13 @@ pub fn parse_status(raw: &str) -> GitStatusResult {
                 let xy = parts[1];
                 let path = if line.starts_with("2 ") && parts.len() >= 11 {
                     // 重命名：path 是第 10 列（index 9），含 tab
-                    parts.get(9).unwrap_or(&"").split('\t').next().unwrap_or("").to_string()
+                    parts
+                        .get(9)
+                        .unwrap_or(&"")
+                        .split('\t')
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
                 } else {
                     parts[8..].join(" ")
                 };
@@ -306,10 +308,7 @@ pub fn parse_worktrees(raw: &str) -> Vec<GitWorktree> {
             current_branch = String::new();
             current_bare = false;
         } else if let Some(rest) = line.strip_prefix("branch ") {
-            current_branch = rest
-                .strip_prefix("refs/heads/")
-                .unwrap_or(rest)
-                .to_string();
+            current_branch = rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string();
         } else if line == "bare" {
             current_bare = true;
         }

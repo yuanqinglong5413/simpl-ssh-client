@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 
 use serde::Serialize;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use std::time::Duration;
 
 use super::manager::SessionManager;
 
