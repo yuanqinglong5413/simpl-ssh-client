@@ -4,6 +4,7 @@ import {
   Columns,
   FileCode,
   Folder,
+  FolderTree,
   GitBranch,
   LogOut,
   Monitor,
@@ -11,6 +12,7 @@ import {
   Rows,
   Search,
   Settings,
+  SquareTerminal,
   Terminal,
   X,
   type LucideIcon,
@@ -194,8 +196,11 @@ export function builtinCommands(handlers: {
   onDisconnect: () => void;
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
+  onSwitchMode?: (mode: "ssh" | "project") => void;
+  onOpenProjectTerminal?: (projectId: string) => void;
+  projects?: { id: string; name: string }[];
 }): CommandItem[] {
-  return [
+  const commands: CommandItem[] = [
     {
       id: "action:new",
       label: "新建连接",
@@ -263,6 +268,41 @@ export function builtinCommands(handlers: {
       action: handlers.onSplitVertical,
     },
   ];
+
+  // 模式切换命令
+  if (handlers.onSwitchMode) {
+    commands.push(
+      {
+        id: "action:mode-ssh",
+        label: "切换到 SSH 管理",
+        icon: Monitor,
+        category: "action",
+        action: () => handlers.onSwitchMode!("ssh"),
+      },
+      {
+        id: "action:mode-project",
+        label: "切换到项目管理",
+        icon: FolderTree,
+        category: "action",
+        action: () => handlers.onSwitchMode!("project"),
+      }
+    );
+  }
+
+  // 项目快速打开命令
+  if (handlers.projects && handlers.onOpenProjectTerminal) {
+    for (const p of handlers.projects) {
+      commands.push({
+        id: `project:open:${p.id}`,
+        label: `打开项目: ${p.name}`,
+        icon: SquareTerminal,
+        category: "connection",
+        action: () => handlers.onOpenProjectTerminal!(p.id),
+      });
+    }
+  }
+
+  return commands;
 }
 
 /** 将 profiles 转为命令列表 */

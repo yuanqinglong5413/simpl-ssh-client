@@ -56,6 +56,26 @@ export function useWorkspaceRestore({
         let restoredActiveId: string | null = null;
 
         for (const wt of snapshot.tabs) {
+          // 本地终端 Tab：不需要重连，直接恢复
+          if (wt.source === "local") {
+            const tab: Tab = {
+              id: wt.id,
+              sessionId: wt.sessionId,
+              title: wt.title,
+              kind: wt.kind,
+              filePath: wt.filePath,
+              repoPath: wt.repoPath,
+              source: "local",
+              projectId: wt.projectId ?? undefined,
+            };
+            restoredTabs.push(tab);
+            if (snapshot.activeTabId === wt.id) {
+              restoredActiveId = wt.id;
+            }
+            continue;
+          }
+
+          // SSH Tab：需要 profileId 才能重连
           if (!wt.profileId) {
             // 无 profileId 的 Tab（手动连接）无法恢复
             continue;
@@ -128,7 +148,7 @@ export function useWorkspaceRestore({
 
     saveTimerRef.current = setTimeout(() => {
       const snapshot: WorkspaceSnapshot = {
-        version: 1,
+        version: 2,
         activeTabId,
         tabs: tabs.map(
           (t): WorkspaceTab => ({
@@ -140,6 +160,8 @@ export function useWorkspaceRestore({
             layout: t.layout,
             filePath: t.filePath,
             repoPath: t.repoPath,
+            source: t.source,
+            projectId: t.projectId ?? null,
           })
         ),
         updatedAt: new Date().toISOString(),

@@ -564,6 +564,12 @@ function App() {
         /* 分屏操作通过当前 active tab 的 layout 实现，暂由 SplitView 内部按钮触发 */
       },
       onSplitVertical: () => {},
+      onSwitchMode: (m) => setMode(m),
+      onOpenProjectTerminal: (pid) => {
+        const p = projects.find((p) => p.id === pid);
+        if (p) openLocalTerminal(p);
+      },
+      projects: projects.map((p) => ({ id: p.id, name: p.name })),
     }),
   ];
 
