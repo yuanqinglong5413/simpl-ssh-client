@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: backend/session_config_and_state
+title: 会话配置与状态管理
+scope:
+    - src-tauri/src/session/profile.rs
+    - src-tauri/src/session/groups.rs
+    - src-tauri/src/session/workspace.rs
+    - src-tauri/src/session/monitor.rs
+    - src-tauri/src/session/forward.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: frontend

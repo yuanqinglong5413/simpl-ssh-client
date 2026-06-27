@@ -16,14 +16,18 @@ import {
 import type { FileEntry } from "../types";
 import { SyncDialog } from "./SyncDialog";
 
-type Props = { sessionId: string };
+type Props = {
+  sessionId: string;
+  /** 双击文件时在编辑器中打开 */
+  onFileOpen?: (filePath: string) => void;
+};
 
 /**
  * SFTP 文件面板：浏览远程文件系统，进入目录、上传/下载（入传输队列，非阻塞）、
  * 新建 / 重命名 / 删除。上传/下载不再阻塞 UI——选好本地路径即入队，
  * 进度与状态见全局 TransferPanel。
  */
-export function SftpPane({ sessionId }: Props) {
+export function SftpPane({ sessionId, onFileOpen }: Props) {
   const [cwd, setCwd] = useState("");
   const [pathInput, setPathInput] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -61,8 +65,13 @@ export function SftpPane({ sessionId }: Props) {
   const parent = () => "/" + cwd.split("/").filter(Boolean).slice(0, -1).join("/");
 
   function enter(e: FileEntry) {
-    if (e.is_dir) load(join(e.name));
-    else download(join(e.name));
+    if (e.is_dir) {
+      load(join(e.name));
+    } else if (onFileOpen) {
+      onFileOpen(join(e.name));
+    } else {
+      download(join(e.name));
+    }
   }
 
   function baseName(p: string): string {

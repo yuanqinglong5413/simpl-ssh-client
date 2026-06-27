@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod forward;
+pub mod git_ops;
 pub mod groups;
 pub mod known_hosts;
 pub mod manager;
@@ -20,6 +21,7 @@ pub mod socks;
 pub mod ssh;
 pub mod sync;
 pub mod transfer;
+pub mod workspace;
 pub mod x11;
 
 pub use auth::{SshAuth, SshConnectParams};
@@ -34,6 +36,7 @@ pub use pty::TerminalBridge;
 pub use sftp::SftpManager;
 pub use ssh::connect_and_exec;
 pub use transfer::TransferQueue;
+pub use workspace::WorkspaceStore;
 
 use std::collections::HashMap;
 use std::sync::Arc;

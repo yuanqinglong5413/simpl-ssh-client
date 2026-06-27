@@ -1,4 +1,4 @@
-import { Folder, Activity, Settings, X } from "lucide-react";
+import { Folder, Activity, Settings, X, GitBranch } from "lucide-react";
 import type { SessionInfo } from "../types";
 import { ThemePicker } from "./ThemePicker";
 
@@ -7,8 +7,10 @@ type Props = {
   tabCount: number;
   onOpenSftp: () => void;
   onOpenMonitor: () => void;
+  onOpenGit: () => void;
   onDisconnect: () => void;
   onOpenSettings: () => void;
+  onOpenCommandPalette?: () => void;
 };
 
 export function StatusBar({
@@ -16,8 +18,10 @@ export function StatusBar({
   tabCount,
   onOpenSftp,
   onOpenMonitor,
+  onOpenGit,
   onDisconnect,
   onOpenSettings,
+  onOpenCommandPalette,
 }: Props) {
   return (
     <div className="statusbar">
@@ -41,6 +45,13 @@ export function StatusBar({
               title="为当前会话打开系统监控"
             >
               <Activity size={13} /> 监控
+            </button>
+            <button
+              className="status-action"
+              onClick={onOpenGit}
+              title="为当前会话打开 Git 面板"
+            >
+              <GitBranch size={13} /> Git
             </button>
             <button
               className="status-action"
@@ -70,6 +81,15 @@ export function StatusBar({
         <ThemePicker />
         <span className="status-sep" />
         <span className="badge">SSH</span>
+        {onOpenCommandPalette && (
+          <button
+            className="status-action"
+            onClick={onOpenCommandPalette}
+            title="命令面板 (⌘K)"
+          >
+            ⌘K
+          </button>
+        )}
         <span>simpl-ssh v0.8.2</span>
       </div>
     </div>

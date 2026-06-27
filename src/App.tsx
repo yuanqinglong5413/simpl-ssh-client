@@ -9,14 +9,24 @@ import { ConnectDialog } from "./components/ConnectDialog";
 import { SplitView } from "./components/SplitView";
 import { SftpPane } from "./components/SftpPane";
 import { MonitorPane } from "./components/MonitorPane";
+import { EditorPane } from "./components/EditorPane";
+import { GitPanel } from "./components/GitPanel";
 import { ConnSteps } from "./components/ConnSteps";
 import { TransferPanel } from "./components/TransferPanel";
 import { ForwardPanel } from "./components/ForwardPanel";
 import { HostKeyDialog } from "./components/HostKeyDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import {
+  CommandPalette,
+  builtinCommands,
+  profileCommands,
+  tabCommands,
+  type CommandItem,
+} from "./components/CommandPalette";
 import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import { useSettings } from "./settings/SettingsProvider";
 import { useUpdater } from "./hooks/useUpdater";
+import { useWorkspaceRestore } from "./hooks/useWorkspaceRestore";
 import type {
   ConnectionProfile,
   HostKeyEvent,
@@ -57,6 +67,7 @@ function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [showConnect, setShowConnect] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [editProfile, setEditProfile] = useState<ConnectionProfile | null>(null);
   const [toast, setToast] = useState("");
   const [toastKind, setToastKind] = useState<ToastKind>("error");
@@ -161,7 +172,7 @@ function App() {
     );
   }
 
-  function openTerminal(s: SessionInfo) {
+  function openTerminal(s: SessionInfo, profileId?: string) {
     const existing = tabs.find((t) => t.sessionId === s.id && t.kind === "terminal");
     if (existing) {
       setActiveTabId(existing.id);
@@ -172,6 +183,7 @@ function App() {
       sessionId: s.id,
       title: `${s.user}@${s.host}`,
       kind: "terminal",
+      profileId,
       layout: {
         kind: "leaf",
         paneId: crypto.randomUUID(),
@@ -216,6 +228,44 @@ function App() {
     setActiveTabId(tab.id);
   }
 
+  function openEditor(sessionId: string, filePath: string) {
+    const existing = tabs.find(
+      (t) => t.kind === "editor" && t.sessionId === sessionId && t.filePath === filePath
+    );
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const tab: Tab = {
+      id: crypto.randomUUID(),
+      sessionId,
+      title: filePath.split("/").pop() ?? filePath,
+      kind: "editor",
+      filePath,
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  function openGit(sessionId: string, repoPath: string) {
+    const existing = tabs.find(
+      (t) => t.kind === "git" && t.sessionId === sessionId && t.repoPath === repoPath
+    );
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const tab: Tab = {
+      id: crypto.randomUUID(),
+      sessionId,
+      title: `Git: ${repoPath.split("/").pop() ?? repoPath}`,
+      kind: "git",
+      repoPath,
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }
+
   function closeTab(id: string) {
     setTabs((prev) => prev.filter((t) => t.id !== id));
     setActiveTabId((prev) => (prev === id ? null : prev));
@@ -245,6 +295,18 @@ function App() {
     onNextTab: () => cycleTab(1),
     onPrevTab: () => cycleTab(-1),
     onOpenSettings: () => setShowSettings(true),
+    onOpenCommandPalette: () => setShowCommandPalette((v) => !v),
+  });
+
+  // 工作区持久化：启动时恢复，tabs 变化时自动保存
+  useWorkspaceRestore({
+    profiles,
+    setTabs,
+    setActiveTabId,
+    tabs,
+    activeTabId,
+    showToast,
+    sessionProfileRef,
   });
 
   async function connectProfile(id: string) {
@@ -264,7 +326,7 @@ function App() {
       await refreshSessions();
       setConnecting(null);
       connectingCidRef.current = null;
-      openTerminal(s);
+      openTerminal(s, id);
     } catch (e) {
       setConnecting(null);
       connectingCidRef.current = null;
@@ -446,6 +508,25 @@ function App() {
     ? sessions.find((s) => s.id === activeTab.sessionId) ?? null
     : null;
 
+  // 命令面板数据源
+  const paletteCommands: CommandItem[] = [
+    ...profileCommands(profiles, connectProfile),
+    ...tabCommands(tabs, setActiveTabId),
+    ...builtinCommands({
+      onNewConnection: () => setShowConnect(true),
+      onCloseTab: () => activeTabId && closeTab(activeTabId),
+      onOpenSettings: () => setShowSettings(true),
+      onOpenSftp: () => activeSession && openSftp(activeSession),
+      onOpenMonitor: () => activeSession && openMonitor(activeSession),
+      onOpenGit: () => activeSession && openGit(activeSession.id, "."),
+      onDisconnect: () => activeSession && disconnect(activeSession.id),
+      onSplitHorizontal: () => {
+        /* 分屏操作通过当前 active tab 的 layout 实现，暂由 SplitView 内部按钮触发 */
+      },
+      onSplitVertical: () => {},
+    }),
+  ];
+
   return (
     <div className="app">
       <Sidebar
@@ -487,9 +568,30 @@ function App() {
                 className={`pane ${t.id === activeTabId ? "active" : ""}`}
               >
                 {t.kind === "sftp" ? (
-                  <SftpPane sessionId={t.sessionId} />
+                  <SftpPane
+                    sessionId={t.sessionId}
+                    onFileOpen={(fp) => openEditor(t.sessionId, fp)}
+                  />
                 ) : t.kind === "monitor" ? (
                   <MonitorPane sessionId={t.sessionId} />
+                ) : t.kind === "editor" ? (
+                  <EditorPane
+                    sessionId={t.sessionId}
+                    filePath={t.filePath ?? ""}
+                    onTitleChange={(name) => {
+                      setTabs((prev) =>
+                        prev.map((tb) =>
+                          tb.id === t.id ? { ...tb, title: name } : tb
+                        )
+                      );
+                    }}
+                  />
+                ) : t.kind === "git" ? (
+                  <GitPanel
+                    sessionId={t.sessionId}
+                    repoPath={t.repoPath ?? ""}
+                    onOpenFile={(fp) => openEditor(t.sessionId, fp)}
+                  />
                 ) : (
                   <SplitView
                     layout={t.layout!}
@@ -509,8 +611,10 @@ function App() {
           tabCount={tabs.length}
           onOpenSftp={() => activeSession && openSftp(activeSession)}
           onOpenMonitor={() => activeSession && openMonitor(activeSession)}
+          onOpenGit={() => activeSession && openGit(activeSession.id, ".")}
           onDisconnect={() => activeSession && disconnect(activeSession.id)}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenCommandPalette={() => setShowCommandPalette((v) => !v)}
         />
       </div>
 
@@ -567,6 +671,12 @@ function App() {
           {toast}
         </div>
       )}
+
+      <CommandPalette
+        open={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        commands={paletteCommands}
+      />
     </div>
   );
 }

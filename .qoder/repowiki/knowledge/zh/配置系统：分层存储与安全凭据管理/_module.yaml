@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: configuration_system
+title: 配置系统：分层存储与安全凭据管理
+scope: []
+source_files:
+    - src-tauri/tauri.conf.json
+    - src/settings/types.ts
+    - src/settings/SettingsProvider.tsx
+    - src/theme/ThemeProvider.tsx
+    - src-tauri/src/session/profile.rs
+    - src-tauri/src/session/secrets.rs
+    - src-tauri/src/session/workspace.rs
+depends_on: []
+related_to: []

@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: build_system
+title: Tauri v2 跨平台构建与自动化发布体系
+scope: []
+source_files:
+    - package.json
+    - src-tauri/Cargo.toml
+    - src-tauri/tauri.conf.json
+    - vite.config.ts
+    - .github/workflows/ci.yml
+    - .github/workflows/release.yml
+    - .github/scripts/prepare-release.mjs
+depends_on: []
+related_to: []

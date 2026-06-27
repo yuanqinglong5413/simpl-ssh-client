@@ -1,0 +1,192 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-06-27T03:56:15Z"
+modules:
+    "":
+        dir_name: Tauri SSH 客户端应用根工作区
+        title: Tauri SSH 客户端应用根工作区
+        scope:
+            - README.md
+            - CONTRIBUTING.md
+            - .gitignore
+            - package.json
+            - pnpm-lock.yaml
+            - pnpm-workspace.yaml
+            - vite.config.ts
+            - tsconfig.json
+            - tsconfig.node.json
+            - index.html
+            - CHANGELOG.md
+            - LICENSE
+        source_files: []
+        children:
+            - backend
+            - frontend
+        depends_on: []
+        related_to: []
+    backend:
+        dir_name: Tauri SSH 客户端后端核心
+        title: Tauri SSH 客户端后端核心
+        scope:
+            - src-tauri/
+        source_files: []
+        children:
+            - backend/file_and_git_ops
+            - backend/session_config_and_state
+            - backend/ssh_core
+            - backend/terminal_transport
+        depends_on: []
+        related_to: []
+    backend/file_and_git_ops:
+        dir_name: 文件传输与 Git 远程操作
+        title: 文件传输与 Git 远程操作
+        scope:
+            - src-tauri/src/session/sftp.rs
+            - src-tauri/src/session/transfer.rs
+            - src-tauri/src/session/git_ops.rs
+            - src-tauri/src/session/sync.rs
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: frontend
+    backend/session_config_and_state:
+        dir_name: 会话配置与状态管理
+        title: 会话配置与状态管理
+        scope:
+            - src-tauri/src/session/profile.rs
+            - src-tauri/src/session/groups.rs
+            - src-tauri/src/session/workspace.rs
+            - src-tauri/src/session/monitor.rs
+            - src-tauri/src/session/forward.rs
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: frontend
+    backend/ssh_core:
+        dir_name: SSH 会话管理与连接核心
+        title: SSH 会话管理与连接核心
+        scope:
+            - src-tauri/src/session/manager.rs
+            - src-tauri/src/session/ssh.rs
+            - src-tauri/src/session/auth.rs
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: frontend
+    backend/terminal_transport:
+        dir_name: SSH 会话传输通道管理
+        title: SSH 会话传输通道管理
+        scope:
+            - src-tauri/src/session/pty.rs
+            - src-tauri/src/session/x11.rs
+            - src-tauri/src/session/socks.rs
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: frontend
+    build_system:
+        dir_name: Tauri v2 跨平台构建与自动化发布体系
+        title: Tauri v2 跨平台构建与自动化发布体系
+        scope: []
+        source_files:
+            - package.json
+            - src-tauri/Cargo.toml
+            - src-tauri/tauri.conf.json
+            - vite.config.ts
+            - .github/workflows/ci.yml
+            - .github/workflows/release.yml
+            - .github/scripts/prepare-release.mjs
+        children: []
+        depends_on: []
+        related_to: []
+    configuration_system:
+        dir_name: 配置系统：分层存储与安全凭据管理
+        title: 配置系统：分层存储与安全凭据管理
+        scope: []
+        source_files:
+            - src-tauri/tauri.conf.json
+            - src/settings/types.ts
+            - src/settings/SettingsProvider.tsx
+            - src/theme/ThemeProvider.tsx
+            - src-tauri/src/session/profile.rs
+            - src-tauri/src/session/secrets.rs
+            - src-tauri/src/session/workspace.rs
+        children: []
+        depends_on: []
+        related_to: []
+    dependency_management:
+        dir_name: 依赖管理：pnpm + Cargo 双栈体系
+        title: 依赖管理：pnpm + Cargo 双栈体系
+        scope: []
+        source_files:
+            - package.json
+            - pnpm-lock.yaml
+            - pnpm-workspace.yaml
+            - src-tauri/Cargo.toml
+            - src-tauri/Cargo.lock
+            - src-tauri/tauri.conf.json
+        children: []
+        depends_on: []
+        related_to: []
+    error_handling:
+        dir_name: 错误处理与异常传播机制
+        title: 错误处理与异常传播机制
+        scope: []
+        source_files:
+            - src-tauri/src/commands.rs
+            - src-tauri/src/session/manager.rs
+            - src-tauri/src/session/auth.rs
+            - src-tauri/src/session/known_hosts.rs
+            - src-tauri/src/session/profile.rs
+            - src-tauri/src/session/sftp.rs
+            - src-tauri/src/lib.rs
+        children: []
+        depends_on: []
+        related_to: []
+    frontend:
+        dir_name: SSH 客户端前端界面
+        title: SSH 客户端前端界面
+        scope:
+            - src/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/file_and_git_ops
+            - path: backend/session_config_and_state
+            - path: backend/ssh_core
+            - path: backend/terminal_transport
+    frontend_style:
+        dir_name: 深墨琥珀设计系统与动态主题引擎
+        title: 深墨琥珀设计系统与动态主题引擎
+        scope: []
+        source_files:
+            - src/App.css
+            - src/theme/ThemeProvider.tsx
+            - src/themes/index.ts
+            - src/themes/types.ts
+            - src/themes/build.ts
+            - src/components/ThemePicker.tsx
+        children: []
+        depends_on: []
+        related_to: []
+    logging_system:
+        dir_name: 基于 tracing 的日志系统
+        title: 基于 tracing 的日志系统
+        scope: []
+        source_files:
+            - src-tauri/Cargo.toml
+            - src-tauri/src/lib.rs
+            - src-tauri/src/session/pty.rs
+            - src-tauri/src/session/ssh.rs
+            - src-tauri/src/commands.rs
+        children: []
+        depends_on: []
+        related_to: []

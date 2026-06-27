@@ -6,6 +6,7 @@ type ShortcutHandlers = {
   onNextTab: () => void;
   onPrevTab: () => void;
   onOpenSettings: () => void;
+  onOpenCommandPalette: () => void;
 };
 
 /** 是否在可编辑元素中（此时不拦截快捷键） */
@@ -43,6 +44,11 @@ export function useAppShortcuts(handlers: ShortcutHandlers) {
         case ",":
           e.preventDefault();
           handlers.onOpenSettings();
+          break;
+        case "k":
+        case "p":
+          e.preventDefault();
+          handlers.onOpenCommandPalette();
           break;
         default:
           break;

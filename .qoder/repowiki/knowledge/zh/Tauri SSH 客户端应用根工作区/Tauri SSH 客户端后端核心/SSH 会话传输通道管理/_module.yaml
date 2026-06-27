@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: backend/terminal_transport
+title: SSH 会话传输通道管理
+scope:
+    - src-tauri/src/session/pty.rs
+    - src-tauri/src/session/x11.rs
+    - src-tauri/src/session/socks.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: frontend

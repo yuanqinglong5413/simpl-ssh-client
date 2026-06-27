@@ -30,6 +30,7 @@ pub fn run() {
         .manage(session::PortForwardManager::default())
         .manage(session::HostKeyVerifier::default())
         .manage(session::MonitorStore::default())
+        .manage(session::WorkspaceStore::default())
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
@@ -49,6 +50,8 @@ pub fn run() {
             commands::sftp_mkdir,
             commands::sftp_rename,
             commands::sftp_remove,
+            commands::sftp_read_file,
+            commands::sftp_write_file,
             commands::sftp_select_local_files,
             commands::sftp_select_folder,
             commands::transfer_enqueue,
@@ -72,6 +75,17 @@ pub fn run() {
             commands::hostkey_trust,
             commands::hostkey_reject,
             commands::hostkey_remove,
+            commands::workspace_save,
+            commands::workspace_load,
+            commands::workspace_clear,
+            commands::git_status,
+            commands::git_log,
+            commands::git_diff,
+            commands::git_branches,
+            commands::git_checkout,
+            commands::git_worktree_list,
+            commands::git_worktree_add,
+            commands::git_worktree_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

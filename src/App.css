@@ -1710,3 +1710,477 @@ input {
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* ===========================  命令面板  ================================= */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: start center;
+  padding-top: 15vh;
+  z-index: 90;
+  animation: fade 0.1s ease;
+}
+.palette-dialog {
+  width: min(560px, 92vw);
+  max-height: 420px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.palette-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.palette-search-icon {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.palette-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+}
+.palette-input::placeholder {
+  color: var(--muted);
+}
+.palette-clear {
+  color: var(--muted);
+  padding: 2px;
+  border-radius: 4px;
+}
+.palette-clear:hover {
+  color: var(--text);
+  background: var(--panel-3);
+}
+.palette-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.palette-empty {
+  padding: 30px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.palette-group {
+  margin-bottom: 4px;
+}
+.palette-group-label {
+  padding: 6px 14px 4px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.08s;
+}
+.palette-item.selected {
+  background: var(--accent-soft);
+}
+.palette-item:hover {
+  background: var(--panel-3);
+}
+.palette-item.selected:hover {
+  background: var(--accent-soft);
+}
+.palette-item-icon {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.palette-item.selected .palette-item-icon {
+  color: var(--accent);
+}
+.palette-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.palette-item-label {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-item-desc {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-footer {
+  display: flex;
+  gap: 12px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ===========================  远程编辑器  ================================ */
+.editor-pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.editor-path {
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-dirty {
+  color: var(--accent);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.editor-lang {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-3);
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.editor-error-bar {
+  padding: 6px 12px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.editor-textarea {
+  flex: 1;
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  outline: none;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: none;
+  tab-size: 4;
+}
+.editor-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  color: var(--muted);
+  font-size: 13px;
+}
+.editor-error {
+  color: var(--red);
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===========================  Git 面板  ================================= */
+.git-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.git-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+  flex-shrink: 0;
+}
+.git-branch-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+.git-branch-name {
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+.git-ahead-behind {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.git-actions {
+  display: flex;
+  gap: 4px;
+}
+.git-error {
+  padding: 6px 14px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.git-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+.git-tabs button {
+  flex: 1;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.git-tabs button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.git-tabs button:hover {
+  background: var(--panel-3);
+}
+.git-changes,
+.git-log,
+.git-worktrees {
+  flex: 1;
+  overflow-y: auto;
+}
+.git-branch-switcher {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.git-branch-switcher select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  outline: none;
+}
+.git-file-list {
+  padding: 4px 0;
+}
+.git-empty-state {
+  padding: 30px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.git-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  color: var(--muted);
+  font-size: 13px;
+}
+.git-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.git-file-row:hover {
+  background: var(--panel-2);
+}
+.git-file-row.sel {
+  background: var(--accent-soft);
+}
+.git-status-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.git-status-badge.modified { color: var(--accent); }
+.git-status-badge.added { color: var(--green); }
+.git-status-badge.deleted { color: var(--red); }
+.git-status-badge.untracked { color: var(--muted); }
+.git-file-path {
+  flex: 1;
+  font-family: var(--font-mono);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-staged-tag {
+  font-size: 10px;
+  color: var(--green);
+  background: rgba(0, 180, 100, 0.1);
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.git-diff-section {
+  border-top: 1px solid var(--border-soft);
+  flex: 1;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+}
+.git-diff-header {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+.git-diff-view {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}
+.git-diff-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.git-diff-block {
+  margin-bottom: 8px;
+}
+.git-diff-pre {
+  margin: 0;
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.diff-line {
+  white-space: pre;
+  padding: 0 4px;
+}
+.diff-add {
+  background: rgba(0, 180, 100, 0.12);
+  color: var(--green);
+}
+.diff-del {
+  background: rgba(255, 80, 80, 0.12);
+  color: var(--red);
+}
+.diff-hunk {
+  color: var(--accent);
+  font-weight: 600;
+}
+.diff-header {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.diff-ctx {
+  color: var(--text-dim);
+}
+.git-log {
+  padding: 4px 0;
+}
+.git-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+}
+.git-log-row:hover {
+  background: var(--panel-2);
+}
+.git-log-hash {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.git-log-msg {
+  flex: 1;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-log-meta {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.git-worktree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+}
+.git-worktree-row:hover {
+  background: var(--panel-2);
+}
+.git-wt-path {
+  flex: 1;
+  font-family: var(--font-mono);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-wt-branch {
+  font-size: 11px;
+  color: var(--accent);
+  flex-shrink: 0;
+}

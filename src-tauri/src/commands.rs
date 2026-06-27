@@ -15,8 +15,10 @@ use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
     connect_and_exec, AuthMethod, HostKeyVerifier, MonitorSnapshot, MonitorStore, SessionInfo,
-    SessionManager, SshAuth, SshConnectParams, TerminalBridge,
+    SessionManager, SshAuth, SshConnectParams, TerminalBridge, WorkspaceStore,
 };
+use crate::session::git_ops;
+use crate::session::git_ops::{exec_git, parse_branches, parse_diff, parse_log, parse_status, parse_worktrees};
 
 // ==============================  SSH 会话  =================================
 
@@ -264,6 +266,97 @@ pub async fn sftp_select_folder(title: String) -> Result<Option<String>, String>
         .pick_folder()
         .await;
     Ok(picked.map(|p| p.path().to_string_lossy().into_owned()))
+}
+
+// ----------------------------  远程文件读写  -------------------------------
+
+/// 远程文件内容（sftp_read_file 返回）。
+#[derive(Serialize)]
+pub struct RemoteFileContent {
+    pub path: String,
+    pub content: String,
+    pub size: u64,
+    pub modified: Option<String>,
+    pub encoding: String,
+}
+
+/// 通过 SFTP 读取远程文件全部内容（仅支持文本文件，5MB 上限）。
+#[tauri::command]
+pub async fn sftp_read_file(
+    sftp_mgr: tauri::State<'_, SftpManager>,
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    path: String,
+) -> Result<RemoteFileContent, String> {
+    use tokio::io::AsyncReadExt;
+
+    const MAX_SIZE: u64 = 5 * 1024 * 1024; // 5MB
+
+    let sftp = sftp_mgr.get(sessions.inner(), &session_id).await?;
+
+    // 获取文件元数据
+    let metadata = sftp.metadata(&path).await.map_err(|e| e.to_string())?;
+    let size = metadata.len();
+    if size > MAX_SIZE {
+        return Err(format!(
+            "文件过大 ({:.1} MB)，超过 5MB 限制，请下载后编辑",
+            size as f64 / 1024.0 / 1024.0
+        ));
+    }
+
+    let modified = metadata
+        .modified()
+        .ok()
+        .map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        });
+
+    // 读取文件内容
+    let mut file = sftp.open(&path).await.map_err(|e| e.to_string())?;
+    let mut buf = Vec::with_capacity(size as usize);
+    file.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
+    drop(file);
+
+    // 检查是否为二进制文件
+    if buf.contains(&0) {
+        return Err("不支持编辑二进制文件".to_string());
+    }
+
+    let content = String::from_utf8(buf)
+        .map_err(|_| "文件不是有效的 UTF-8 文本".to_string())?;
+
+    Ok(RemoteFileContent {
+        path,
+        content,
+        size,
+        modified,
+        encoding: "utf-8".to_string(),
+    })
+}
+
+/// 通过 SFTP 写入远程文件（覆盖写）。
+#[tauri::command]
+pub async fn sftp_write_file(
+    sftp_mgr: tauri::State<'_, SftpManager>,
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let sftp = sftp_mgr.get(sessions.inner(), &session_id).await?;
+
+    let mut file = sftp.create(&path).await.map_err(|e| e.to_string())?;
+    file.write_all(content.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    file.flush().await.map_err(|e| e.to_string())?;
+    drop(file);
+
+    Ok(())
 }
 
 // ------------------------------  传输队列  ---------------------------------
@@ -704,4 +797,199 @@ pub async fn hostkey_remove(
     port: u16,
 ) -> Result<(), String> {
     verifier.remove_host(&host, port).await
+}
+
+// ==============================  工作区持久化  ================================
+
+/// 保存当前工作区快照（前端在 tabs 变更时 debounce 调用）。
+#[tauri::command]
+pub async fn workspace_save(
+    ws: tauri::State<'_, WorkspaceStore>,
+    snapshot: String,
+) -> Result<(), String> {
+    ws.save(&snapshot).await
+}
+
+/// 加载上次的工作区快照（启动时调用）。返回 JSON 字符串。
+#[tauri::command]
+pub async fn workspace_load(
+    ws: tauri::State<'_, WorkspaceStore>,
+) -> Result<Option<String>, String> {
+    ws.load().await
+}
+
+/// 清空工作区快照（用户手动 "不恢复" 时调用）。
+#[tauri::command]
+pub async fn workspace_clear(
+    ws: tauri::State<'_, WorkspaceStore>,
+) -> Result<(), String> {
+    ws.clear().await
+}
+
+// ==============================  Git 操作  =================================
+
+/// 获取 git status。
+#[tauri::command]
+pub async fn git_status(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+) -> Result<git_ops::GitStatusResult, String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let output = exec_git(
+        &entry.handle,
+        &repo_path,
+        "status --porcelain=v2 --branch",
+    )
+    .await?;
+    Ok(parse_status(&output))
+}
+
+/// 获取 git log。
+#[tauri::command]
+pub async fn git_log(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    count: Option<u32>,
+) -> Result<Vec<git_ops::GitLogEntry>, String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let n = count.unwrap_or(30);
+    let output = exec_git(
+        &entry.handle,
+        &repo_path,
+        &format!("log --format=\"%H|%h|%an|%aI|%s\" -n {n}"),
+    )
+    .await?;
+    Ok(parse_log(&output))
+}
+
+/// 获取 git diff。
+#[tauri::command]
+pub async fn git_diff(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    file_path: Option<String>,
+    staged: Option<bool>,
+) -> Result<Vec<git_ops::GitDiffResult>, String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let mut args = String::from("diff");
+    if staged.unwrap_or(false) {
+        args.push_str(" --staged");
+    }
+    if let Some(fp) = file_path {
+        args.push_str(" -- ");
+        args.push_str(&fp);
+    }
+    let output = exec_git(&entry.handle, &repo_path, &args).await?;
+    Ok(parse_diff(&output))
+}
+
+/// 获取分支列表。
+#[tauri::command]
+pub async fn git_branches(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+) -> Result<Vec<git_ops::GitBranch>, String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let output = exec_git(
+        &entry.handle,
+        &repo_path,
+        "branch -a --format=\"%(refname:short)|%(HEAD)\"",
+    )
+    .await?;
+    Ok(parse_branches(&output))
+}
+
+/// 切换分支。
+#[tauri::command]
+pub async fn git_checkout(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    branch: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    exec_git(
+        &entry.handle,
+        &repo_path,
+        &format!("checkout {}", branch),
+    )
+    .await?;
+    Ok(())
+}
+
+/// 列出 worktree。
+#[tauri::command]
+pub async fn git_worktree_list(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+) -> Result<Vec<git_ops::GitWorktree>, String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let output = exec_git(&entry.handle, &repo_path, "worktree list --porcelain").await?;
+    Ok(parse_worktrees(&output))
+}
+
+/// 添加 worktree。
+#[tauri::command]
+pub async fn git_worktree_add(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    path: String,
+    branch: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    exec_git(
+        &entry.handle,
+        &repo_path,
+        &format!("worktree add {} -b {}", path, branch),
+    )
+    .await?;
+    Ok(())
+}
+
+/// 删除 worktree。
+#[tauri::command]
+pub async fn git_worktree_remove(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    path: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    exec_git(
+        &entry.handle,
+        &repo_path,
+        &format!("worktree remove {}", path),
+    )
+    .await?;
+    Ok(())
 }

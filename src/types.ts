@@ -42,13 +42,22 @@ export type SplitNode =
       children: [SplitNode, SplitNode];
     };
 
+/** Tab 种类 */
+export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git";
+
 export type Tab = {
   id: string;
   sessionId: string;
   title: string;
-  kind: "terminal" | "sftp" | "monitor";
+  kind: TabKind;
   /** 仅 terminal Tab 用：终端分屏布局。 */
   layout?: SplitNode;
+  /** editor Tab: 远程文件路径 */
+  filePath?: string;
+  /** 持久化重连用（workspace restore） */
+  profileId?: string;
+  /** git Tab: 远程仓库路径 */
+  repoPath?: string;
 };
 
 export type FileEntry = {
@@ -124,4 +133,76 @@ export type MonitorSnapshot = {
   load_15: number;
   uptime_secs: number;
   disks: DiskUsage[];
+};
+
+// =============================  Editor  ==============================
+
+/** 远程文件内容（sftp_read_file 返回） */
+export type RemoteFileContent = {
+  path: string;
+  content: string;
+  size: number;
+  modified: string | null;
+  encoding: string;
+};
+
+// =============================  Git  ================================
+
+export type GitFileStatus = {
+  path: string;
+  status: string;
+  staged: boolean;
+};
+
+export type GitStatusResult = {
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  files: GitFileStatus[];
+};
+
+export type GitLogEntry = {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  message: string;
+};
+
+export type GitDiffResult = {
+  path: string;
+  diff: string;
+};
+
+export type GitBranch = {
+  name: string;
+  isCurrent: boolean;
+  isRemote: boolean;
+};
+
+export type GitWorktree = {
+  path: string;
+  branch: string;
+  isBare: boolean;
+};
+
+// =============================  Workspace  ===========================
+
+export type WorkspaceTab = {
+  id: string;
+  sessionId: string;
+  profileId: string | null;
+  title: string;
+  kind: TabKind;
+  layout?: SplitNode;
+  filePath?: string;
+  repoPath?: string;
+};
+
+export type WorkspaceSnapshot = {
+  version: number;
+  activeTabId: string | null;
+  tabs: WorkspaceTab[];
+  updatedAt: string;
 };
