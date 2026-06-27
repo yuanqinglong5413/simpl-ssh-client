@@ -347,7 +347,7 @@ input {
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-rows: var(--topbar-h) 1fr var(--status-h);
+  grid-template-rows: var(--topbar-h) auto 1fr var(--status-h);
 }
 
 /* ---- Tab 栏 ---- */
