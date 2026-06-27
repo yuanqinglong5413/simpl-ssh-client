@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal as TerminalIcon } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
+import { TopBar } from "./components/TopBar";
+import { ProjectSidebar } from "./components/ProjectSidebar";
 import { TabBar } from "./components/TabBar";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectDialog } from "./components/ConnectDialog";
@@ -11,6 +13,7 @@ import { SftpPane } from "./components/SftpPane";
 import { MonitorPane } from "./components/MonitorPane";
 import { EditorPane } from "./components/EditorPane";
 import { GitPanel } from "./components/GitPanel";
+import { LocalTerminalPane } from "./components/LocalTerminalPane";
 import { ConnSteps } from "./components/ConnSteps";
 import { TransferPanel } from "./components/TransferPanel";
 import { ForwardPanel } from "./components/ForwardPanel";
@@ -28,8 +31,10 @@ import { useSettings } from "./settings/SettingsProvider";
 import { useUpdater } from "./hooks/useUpdater";
 import { useWorkspaceRestore } from "./hooks/useWorkspaceRestore";
 import type {
+  AppMode,
   ConnectionProfile,
   HostKeyEvent,
+  Project,
   ProfileGroup,
   SessionInfo,
   SplitNode,
@@ -71,6 +76,9 @@ function App() {
   const [editProfile, setEditProfile] = useState<ConnectionProfile | null>(null);
   const [toast, setToast] = useState("");
   const [toastKind, setToastKind] = useState<ToastKind>("error");
+  // Part 3: 双模式（SSH / 项目）
+  const [mode, setMode] = useState<AppMode>("ssh");
+  const [projects, setProjects] = useState<Project[]>([]);
   const [connecting, setConnecting] = useState<{
     cid: string;
     name: string;
@@ -119,10 +127,19 @@ function App() {
     }
   };
 
+  const refreshProjects = async () => {
+    try {
+      setProjects(await invoke<Project[]>("project_list"));
+    } catch (e) {
+      showToast(String(e));
+    }
+  };
+
   useEffect(() => {
     refreshSessions();
     refreshProfiles();
     refreshGroups();
+    refreshProjects();
   }, []);
 
   useEffect(() => {
@@ -264,6 +281,29 @@ function App() {
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
+  }
+
+  /** 打开本地终端 Tab */
+  function openLocalTerminal(project: Project) {
+    const tab: Tab = {
+      id: crypto.randomUUID(),
+      sessionId: project.id, // 复用 sessionId 字段存储 projectId
+      title: project.name,
+      kind: "local-terminal",
+      source: "local",
+      projectId: project.id,
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  async function deleteProject(id: string) {
+    try {
+      await invoke("project_delete", { id });
+      await refreshProjects();
+    } catch (e) {
+      showToast(String(e));
+    }
   }
 
   function closeTab(id: string) {
@@ -529,25 +569,39 @@ function App() {
 
   return (
     <div className="app">
-      <Sidebar
-        profiles={profiles}
-        groups={groups}
-        onConnectProfile={connectProfile}
-        onEditProfile={setEditProfile}
-        onDeleteProfile={deleteProfile}
-        onCreateGroup={createGroup}
-        onRenameGroup={renameGroup}
-        onDeleteGroup={deleteGroup}
-        onNew={() => setShowConnect(true)}
-      />
+      {mode === "ssh" ? (
+        <Sidebar
+          profiles={profiles}
+          groups={groups}
+          onConnectProfile={connectProfile}
+          onEditProfile={setEditProfile}
+          onDeleteProfile={deleteProfile}
+          onCreateGroup={createGroup}
+          onRenameGroup={renameGroup}
+          onDeleteGroup={deleteGroup}
+          onNew={() => setShowConnect(true)}
+        />
+      ) : (
+        <ProjectSidebar
+          projects={projects}
+          onConnectProject={openLocalTerminal}
+          onDeleteProject={deleteProject}
+        />
+      )}
 
       <div className="workspace">
+        <TopBar
+          mode={mode}
+          onModeChange={setMode}
+          sshTabCount={tabs.filter((t) => t.source !== "local").length}
+          projectTabCount={tabs.filter((t) => t.source === "local").length}
+        />
         <TabBar
           tabs={tabs}
           activeTabId={activeTabId}
           onActivate={setActiveTabId}
           onClose={closeTab}
-          onNew={() => setShowConnect(true)}
+          onNew={() => mode === "ssh" ? setShowConnect(true) : undefined}
         />
 
         <main className="main">
@@ -591,6 +645,13 @@ function App() {
                     sessionId={t.sessionId}
                     repoPath={t.repoPath ?? ""}
                     onOpenFile={(fp) => openEditor(t.sessionId, fp)}
+                  />
+                ) : t.kind === "local-terminal" ? (
+                  <LocalTerminalPane
+                    paneId={t.id}
+                    cwd={
+                      projects.find((p) => p.id === t.projectId)?.local_path ?? ""
+                    }
                   />
                 ) : (
                   <SplitView

@@ -43,7 +43,10 @@ export type SplitNode =
     };
 
 /** Tab 种类 */
-export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git";
+export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git" | "local-terminal" | "local-editor" | "local-git";
+
+/** Tab 数据来源：ssh = 远程会话，local = 本地项目 */
+export type TabSource = "ssh" | "local";
 
 export type Tab = {
   id: string;
@@ -58,6 +61,10 @@ export type Tab = {
   profileId?: string;
   /** git Tab: 远程仓库路径 */
   repoPath?: string;
+  /** 数据来源：ssh 或 local */
+  source?: TabSource;
+  /** 本地项目 ID（source=local 时使用） */
+  projectId?: string;
 };
 
 export type FileEntry = {
@@ -198,6 +205,8 @@ export type WorkspaceTab = {
   layout?: SplitNode;
   filePath?: string;
   repoPath?: string;
+  source?: TabSource;
+  projectId?: string | null;
 };
 
 export type WorkspaceSnapshot = {
@@ -205,4 +214,26 @@ export type WorkspaceSnapshot = {
   activeTabId: string | null;
   tabs: WorkspaceTab[];
   updatedAt: string;
+};
+
+// =============================  Project  =============================
+
+/** 应用模式：SSH 管理 / 项目管理 */
+export type AppMode = "ssh" | "project";
+
+/** 本地项目 */
+export type Project = {
+  id: string;
+  name: string;
+  local_path: string;
+  group_id: string | null;
+  created_at: string;
+  linked_profiles: string[];
+};
+
+export type ProjectInput = {
+  name: string;
+  local_path: string;
+  group_id: string | null;
+  linked_profiles: string[];
 };

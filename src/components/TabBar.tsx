@@ -1,4 +1,4 @@
-import { Activity, FileCode, Folder, GitBranch, Plus, Terminal, X } from "lucide-react";
+import { Activity, FileCode, Folder, GitBranch, Plus, SquareTerminal, Terminal, X } from "lucide-react";
 import type { Tab } from "../types";
 
 type Props = {
@@ -33,6 +33,8 @@ export function TabBar({
             <FileCode size={13} />
           ) : t.kind === "git" ? (
             <GitBranch size={13} />
+          ) : t.kind === "local-terminal" ? (
+            <SquareTerminal size={13} />
           ) : (
             <Terminal size={13} />
           )}

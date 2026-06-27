@@ -111,6 +111,61 @@ input {
   background: var(--scrollbar-hover);
 }
 
+/* ---- TopBar ---- */
+.topbar {
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--gap-md);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  gap: var(--gap-sm);
+}
+.topbar-tabs {
+  display: flex;
+  gap: var(--gap-xs);
+}
+.topbar-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  transition: all 0.15s;
+}
+.topbar-tab:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.topbar-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.topbar-count {
+  font-size: var(--fs-xs);
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--panel-3);
+  color: var(--muted);
+  min-width: 18px;
+  text-align: center;
+}
+.topbar-tab.active .topbar-count {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---- ProjectSidebar path input ---- */
+.path-row {
+  display: flex;
+  gap: var(--gap-xs);
+}
+.path-row .form-input {
+  flex: 1;
+}
+
 /* ---- App shell ---- */
 .app {
   display: flex;
