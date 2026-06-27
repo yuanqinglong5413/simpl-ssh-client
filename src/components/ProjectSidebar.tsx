@@ -1,5 +1,13 @@
 import { useMemo, useState } from "react";
-import { FolderPlus, Pencil, Plus, Trash2, Folder, Terminal } from "lucide-react";
+import {
+  Folder,
+  FolderPlus,
+  FolderTree,
+  Pencil,
+  Plus,
+  Terminal,
+  Trash2,
+} from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Project, ProjectInput } from "../types";
@@ -13,6 +21,7 @@ type Props = {
 
 /**
  * 项目侧栏：本地项目列表，双击打开本地终端。
+ * 复用 SSH 侧栏的 CSS 类（session-item / session-meta / session-x 等）保持视觉一致。
  */
 export function ProjectSidebar({
   projects,
@@ -29,66 +38,82 @@ export function ProjectSidebar({
   );
 
   return (
-    <div className="sidebar">
-      <div className="sidebar-head">
-        <span className="sidebar-title">项目</span>
-        <button
-          className="btn btn-ghost"
-          title="新建项目"
-          onClick={() => setShowCreate(true)}
-        >
-          <Plus size={15} />
-        </button>
+    <aside className="sidebar">
+      <div className="brand">
+        <span className="brand-mark" style={{ background: "linear-gradient(145deg, var(--accent), #e67e00)" }}>
+          <FolderTree size={13} strokeWidth={2.5} />
+        </span>
+        <span className="brand-name">
+          项目<b>管理</b>
+        </span>
       </div>
 
-      <div className="sidebar-list">
+      <div className="session-list">
+        <div className="sidebar-label-row">
+          <span className="sidebar-label">
+            本地项目 ({sorted.length})
+          </span>
+          <button
+            className="sidebar-icon-btn"
+            title="新建项目"
+            onClick={() => setShowCreate(true)}
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+
         {sorted.length === 0 && (
           <div className="sidebar-empty">
-            还没有项目
-            <br />
-            点击 + 创建
+            <div className="sidebar-empty-icon">
+              <FolderPlus size={28} />
+            </div>
+            <div>还没有项目</div>
+            <div className="sidebar-empty-hint">点击上方 + 创建本地项目</div>
           </div>
         )}
+
         {sorted.map((p) => (
           <div
             key={p.id}
-            className="profile-item"
+            className="session-item"
             onDoubleClick={() => onConnectProject(p)}
             title={p.local_path}
           >
+            <Folder size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
+            <span className="session-meta">
+              <div className="session-title">{p.name}</div>
+              <div className="session-sub">{p.local_path}</div>
+            </span>
             <button
-              className="profile-connect"
-              onClick={() => onConnectProject(p)}
+              className="session-x"
               title="打开终端"
+              onClick={(e) => {
+                e.stopPropagation();
+                onConnectProject(p);
+              }}
             >
-              <Terminal size={14} />
+              <Terminal size={13} />
             </button>
-            <div className="profile-info">
-              <span className="profile-name">{p.name}</span>
-              <span className="profile-detail">{p.local_path}</span>
-            </div>
-            <div className="profile-actions">
-              <button
-                className="btn btn-ghost"
-                title="编辑"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditTarget(p);
-                }}
-              >
-                <Pencil size={12} />
-              </button>
-              <button
-                className="btn btn-ghost danger"
-                title="删除"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteProject(p.id);
-                }}
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
+            <button
+              className="session-x"
+              title="编辑"
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditTarget(p);
+              }}
+            >
+              <Pencil size={13} />
+            </button>
+            <button
+              className="session-x"
+              title="删除"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteProject(p.id);
+              }}
+            >
+              <Trash2 size={13} />
+            </button>
           </div>
         ))}
       </div>
@@ -112,7 +137,7 @@ export function ProjectSidebar({
           }}
         />
       )}
-    </div>
+    </aside>
   );
 }
 
@@ -173,6 +198,7 @@ function ProjectDialog({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="项目名称"
+              autoFocus
             />
           </label>
           <label className="form-label">
