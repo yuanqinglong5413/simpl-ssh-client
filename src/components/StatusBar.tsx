@@ -90,7 +90,7 @@ export function StatusBar({
             ⌘K
           </button>
         )}
-        <span>simpl-ssh v0.8.2</span>
+        <span>simpl-ssh v0.9.0</span>
       </div>
     </div>
   );
