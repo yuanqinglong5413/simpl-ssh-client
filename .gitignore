@@ -25,3 +25,6 @@ dist-ssr
 
 # Updater signing (私钥勿提交)
 src-tauri/simpl-ssh.key
+
+# IDE metadata
+.qoder/
