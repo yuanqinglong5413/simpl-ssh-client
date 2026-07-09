@@ -615,7 +615,7 @@ pub async fn profile_delete(
     state.delete(&id).await
 }
 
-/// 用保存的配置直接连接（从钥匙串取密码）。
+/// 用保存的配置直接连接（从钥匙串/加密缓存取密码）。
 #[tauri::command]
 pub async fn profile_connect(
     state: tauri::State<'_, ProfileStore>,
@@ -634,6 +634,18 @@ pub async fn profile_connect(
         .connect(&params, &app, &connect_id, verifier.inner())
         .await
         .map_err(|e| e.to_string())
+}
+
+/// 启动恢复前批量预热凭据，减少 macOS 钥匙串连续弹窗。
+///
+/// 业务逻辑：前端在串行 `profile_connect` 之前调用一次，把工作区涉及的
+/// profile（含跳板机）凭据读入加密缓存；后续连接走缓存，不再反复弹授权框。
+#[tauri::command]
+pub async fn profile_warm_credentials(
+    state: tauri::State<'_, ProfileStore>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    state.warm_credentials(&ids).await
 }
 
 // ==============================  连接分组  =================================

@@ -13,6 +13,14 @@ export type AppSettings = {
   cursorStyle: CursorStyle;
   /** 光标闪烁 */
   cursorBlink: boolean;
+  /** 滚动缓冲区行数（越大越接近 iTerm 体验，占内存也越多） */
+  scrollback: number;
+  /** 选中即复制（macOS 终端常见习惯） */
+  copyOnSelect: boolean;
+  /** 右键粘贴 */
+  rightClickSelectsWord: boolean;
+  /** 纯文本日志语法高亮（可能误伤交互程序，可关闭） */
+  logHighlight: boolean;
   /** 断线后自动重连 */
   autoReconnect: boolean;
   /** 最大重连次数 */
@@ -31,6 +39,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lineHeight: 1.3,
   cursorStyle: "bar",
   cursorBlink: true,
+  scrollback: 10000,
+  copyOnSelect: true,
+  rightClickSelectsWord: true,
+  logHighlight: true,
   autoReconnect: true,
   maxReconnectAttempts: 5,
   enableX11: false,

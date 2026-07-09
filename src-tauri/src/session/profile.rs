@@ -3,9 +3,9 @@
 //! 元数据（名称/主机/端口/用户/认证方式/私钥路径）存本地 JSON；
 //! 密码与私钥 passphrase 存 OS 钥匙串（keyring），**不落明文**。
 //!
-//! 钥匙串里的密码读出后会进入一个**内存加密缓存**（见 [`super::secrets`]），
-//! 24h 内重复连接同一配置直接命中缓存，不再访问钥匙串——避免 macOS 上
-//! 每次读取都弹系统授权框。缓存随进程退出而清空。
+//! 钥匙串里的密码读出后会进入**加密缓存**（见 [`super::secrets`]）：
+//! 内存 + 本机绑定磁盘密文，24h 内重复连接 / 重启应用直接命中，
+//! 不再访问钥匙串——避免 macOS 上每次读取都弹系统授权框。
 
 use std::path::PathBuf;
 
@@ -108,7 +108,8 @@ impl ProfileStore {
             input.password,
             input.private_key_path.clone(),
             input.passphrase,
-        )?;
+        )
+        .await?;
 
         let profile = ConnectionProfile {
             id,
@@ -129,59 +130,62 @@ impl ProfileStore {
 
     /// 更新已有配置；密码 / passphrase 传空则保留钥匙串中的旧值。
     pub async fn update(&self, id: &str, input: ProfileInput) -> Result<ConnectionProfile, String> {
-        let mut guard = self.profiles.lock().await;
-        let idx = guard
-            .iter()
-            .position(|p| p.id == id)
-            .ok_or_else(|| format!("profile not found: {id}"))?;
-
-        let prev_method = guard[idx].auth_method.clone();
-        if prev_method != input.auth_method {
-            self.clear_credentials(id, &prev_method);
-            match &input.auth_method {
-                AuthMethod::Password => {
-                    let pw = input
-                        .password
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| "切换为密码认证需填写密码".to_string())?;
-                    self.set_password(id, &pw)?;
-                }
-                AuthMethod::PrivateKey => {
-                    if input.private_key_path.as_ref().is_none_or(|s| s.is_empty()) {
-                        return Err("切换为私钥认证需选择私钥文件".to_string());
-                    }
-                    if let Some(pp) = input.passphrase.filter(|s| !s.is_empty()) {
-                        self.set_passphrase(id, &pp)?;
-                    }
-                }
-            }
-        } else {
-            match input.auth_method {
-                AuthMethod::Password => {
-                    if let Some(pw) = input.password.filter(|s| !s.is_empty()) {
-                        self.set_password(id, &pw)?;
-                        self.cache.remove(id).await;
-                    }
-                }
-                AuthMethod::PrivateKey => {
-                    if let Some(pp) = input.passphrase.filter(|s| !s.is_empty()) {
-                        self.set_passphrase(id, &pp)?;
-                        self.cache.remove(&passphrase_key(id)).await;
-                    }
-                }
-            }
-        }
+        // 先读出旧认证方式（短持锁），再在锁外写钥匙串，避免 await 钥匙串弹窗时死锁。
+        let prev_method = {
+            let guard = self.profiles.lock().await;
+            guard
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.auth_method.clone())
+                .ok_or_else(|| format!("profile not found: {id}"))?
+        };
 
         if input.auth_method == AuthMethod::PrivateKey
             && input.private_key_path.as_ref().is_none_or(|s| s.is_empty())
         {
             return Err("私钥认证需要指定私钥路径".to_string());
         }
-
         if input.jump_profile_id.as_deref() == Some(id) {
             return Err("跳板机不能指向自身".to_string());
         }
 
+        if prev_method != input.auth_method {
+            self.clear_credentials(id, &prev_method);
+            match &input.auth_method {
+                AuthMethod::Password => {
+                    let pw = input
+                        .password
+                        .as_ref()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| "切换为密码认证需填写密码".to_string())?;
+                    self.set_password_cached(id, pw).await?;
+                }
+                AuthMethod::PrivateKey => {
+                    if let Some(pp) = input.passphrase.as_ref().filter(|s| !s.is_empty()) {
+                        self.set_passphrase_cached(id, pp).await?;
+                    }
+                }
+            }
+        } else {
+            match input.auth_method {
+                AuthMethod::Password => {
+                    if let Some(pw) = input.password.as_ref().filter(|s| !s.is_empty()) {
+                        self.set_password_cached(id, pw).await?;
+                    }
+                }
+                AuthMethod::PrivateKey => {
+                    if let Some(pp) = input.passphrase.as_ref().filter(|s| !s.is_empty()) {
+                        self.set_passphrase_cached(id, pp).await?;
+                    }
+                }
+            }
+        }
+
+        let mut guard = self.profiles.lock().await;
+        let idx = guard
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| format!("profile not found: {id}"))?;
         guard[idx] = ConnectionProfile {
             id: id.to_string(),
             name: input.name,
@@ -250,7 +254,7 @@ impl ProfileStore {
         Ok(())
     }
 
-    /// 将 profile 转为 SSH 连接参数（从钥匙串读凭据，解析跳板机）。
+    /// 将 profile 转为 SSH 连接参数（从缓存/钥匙串读凭据，解析跳板机）。
     pub async fn to_connect_params(
         &self,
         profile: &ConnectionProfile,
@@ -264,6 +268,47 @@ impl ProfileStore {
             auth,
             jump,
         })
+    }
+
+    /// 启动恢复前预热凭据：按 profile id 列表一次性读入缓存。
+    ///
+    /// 业务逻辑：工作区恢复会串行 `profile_connect` 多个 Tab；若每个连接各自
+    /// 触发钥匙串读取，macOS 会连续弹授权框。这里先收集目标 + 跳板机所需的
+    /// 全部凭据键，再逐个读入加密缓存——系统侧通常只需解锁一次。
+    pub async fn warm_credentials(&self, profile_ids: &[String]) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for id in profile_ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let Some(profile) = self.find(id).await else {
+                continue;
+            };
+            // 目标凭据
+            let _ = self.warm_one(&profile).await;
+            // 跳板机凭据（若有）
+            if let Some(jump_id) = profile.jump_profile_id.as_ref() {
+                if !jump_id.is_empty() && seen.insert(jump_id.clone()) {
+                    if let Some(jump) = self.find(jump_id).await {
+                        let _ = self.warm_one(&jump).await;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 预热单个 profile 的密码或 passphrase（忽略缺失，不阻断恢复流程）。
+    async fn warm_one(&self, profile: &ConnectionProfile) -> Result<(), String> {
+        match profile.auth_method {
+            AuthMethod::Password => {
+                let _ = self.get_password(&profile.id).await?;
+            }
+            AuthMethod::PrivateKey => {
+                let _ = self.get_passphrase(&profile.id).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn resolve_auth(&self, profile: &ConnectionProfile) -> Result<SshAuth, String> {
@@ -313,13 +358,20 @@ impl ProfileStore {
         })))
     }
 
-    /// 读取某配置的密码（内存缓存 → 钥匙串）。
+    /// 读取某配置的密码（加密缓存 → 钥匙串）。
     pub async fn get_password(&self, id: &str) -> Result<String, String> {
         if let Some(pw) = self.cache.get(id).await {
             return Ok(pw);
         }
-        let entry = keyring::Entry::new(SERVICE, id).map_err(|e| e.to_string())?;
-        let pw = entry.get_password().map_err(|e| e.to_string())?;
+        // 钥匙串访问放到 blocking 线程，避免卡住 async runtime；
+        // macOS 弹授权框时也不会阻塞其它任务。
+        let id_owned = id.to_string();
+        let pw = tokio::task::spawn_blocking(move || {
+            let entry = keyring::Entry::new(SERVICE, &id_owned).map_err(|e| e.to_string())?;
+            entry.get_password().map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         self.cache.put(id, &pw).await;
         Ok(pw)
     }
@@ -330,27 +382,56 @@ impl ProfileStore {
         if let Some(pw) = self.cache.get(&key).await {
             return Ok(pw);
         }
-        let entry = keyring::Entry::new(SERVICE, &key).map_err(|e| e.to_string())?;
-        match entry.get_password() {
-            Ok(pw) => {
+        let key_owned = key.clone();
+        let pw: Option<String> = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+            let entry = keyring::Entry::new(SERVICE, &key_owned).map_err(|e| e.to_string())?;
+            match entry.get_password() {
+                Ok(pw) => Ok(Some(pw)),
+                Err(_) => Ok(None),
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        match pw {
+            Some(pw) => {
                 self.cache.put(&key, &pw).await;
                 Ok(pw)
             }
-            Err(_) => Ok(String::new()),
+            None => Ok(String::new()),
         }
     }
 
-    fn set_password(&self, id: &str, password: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(SERVICE, id).map_err(|e| e.to_string())?;
-        entry.set_password(password).map_err(|e| e.to_string())
+    /// 写入密码到钥匙串并更新加密缓存。
+    async fn set_password_cached(&self, id: &str, password: &str) -> Result<(), String> {
+        let id_owned = id.to_string();
+        let pw_owned = password.to_string();
+        tokio::task::spawn_blocking(move || {
+            let entry = keyring::Entry::new(SERVICE, &id_owned).map_err(|e| e.to_string())?;
+            entry.set_password(&pw_owned).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        self.cache.put(id, password).await;
+        Ok(())
     }
 
-    fn set_passphrase(&self, id: &str, passphrase: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(SERVICE, &passphrase_key(id)).map_err(|e| e.to_string())?;
-        entry.set_password(passphrase).map_err(|e| e.to_string())
+    /// 写入 passphrase 到钥匙串并更新加密缓存。
+    async fn set_passphrase_cached(&self, id: &str, passphrase: &str) -> Result<(), String> {
+        let key = passphrase_key(id);
+        let key_owned = key.clone();
+        let pp_owned = passphrase.to_string();
+        tokio::task::spawn_blocking(move || {
+            let entry = keyring::Entry::new(SERVICE, &key_owned).map_err(|e| e.to_string())?;
+            entry.set_password(&pp_owned).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        self.cache.put(&key, passphrase).await;
+        Ok(())
     }
 
-    fn store_credentials(
+    /// 按认证方式写入凭据（钥匙串 + 加密缓存）。
+    async fn store_credentials(
         &self,
         id: &str,
         auth_method: AuthMethod,
@@ -363,14 +444,14 @@ impl ProfileStore {
                 let pw = password
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "密码认证需要填写密码".to_string())?;
-                self.set_password(id, &pw)?;
+                self.set_password_cached(id, &pw).await?;
             }
             AuthMethod::PrivateKey => {
                 if private_key_path.as_ref().is_none_or(|s| s.is_empty()) {
                     return Err("私钥认证需要选择私钥文件".to_string());
                 }
                 if let Some(pp) = passphrase.filter(|s| !s.is_empty()) {
-                    self.set_passphrase(id, &pp)?;
+                    self.set_passphrase_cached(id, &pp).await?;
                 }
             }
         }

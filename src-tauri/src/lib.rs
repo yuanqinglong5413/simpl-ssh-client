@@ -69,6 +69,7 @@ pub fn run() {
             commands::profile_update,
             commands::profile_delete,
             commands::profile_connect,
+            commands::profile_warm_credentials,
             commands::profile_select_private_key,
             commands::group_list,
             commands::group_create,

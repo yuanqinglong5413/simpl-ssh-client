@@ -118,6 +118,49 @@ export function SettingsDialog({ open, onClose }: Props) {
                 </label>
               </div>
             </div>
+            <div className="field">
+              <label>滚动缓冲 ({settings.scrollback} 行)</label>
+              <input
+                type="range"
+                min={1000}
+                max={50000}
+                step={1000}
+                value={settings.scrollback}
+                onChange={(e) =>
+                  updateSettings({ scrollback: Number(e.target.value) })
+                }
+              />
+            </div>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.copyOnSelect}
+                onChange={(e) =>
+                  updateSettings({ copyOnSelect: e.target.checked })
+                }
+              />
+              选中即复制（贴近 iTerm / macOS Terminal）
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.rightClickSelectsWord}
+                onChange={(e) =>
+                  updateSettings({ rightClickSelectsWord: e.target.checked })
+                }
+              />
+              右键选中单词
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.logHighlight}
+                onChange={(e) =>
+                  updateSettings({ logHighlight: e.target.checked })
+                }
+              />
+              纯文本日志语法高亮（若 vim/htop 排版异常可关闭）
+            </label>
             <div
               className="settings-preview"
               style={{
@@ -218,6 +261,14 @@ export function SettingsDialog({ open, onClose }: Props) {
               <div>
                 <dt>Ctrl+F</dt>
                 <dd>终端内搜索（焦点在终端时）</dd>
+              </div>
+              <div>
+                <dt>Ctrl+Shift+C</dt>
+                <dd>复制选中内容</dd>
+              </div>
+              <div>
+                <dt>Ctrl+Shift+V / Cmd+V</dt>
+                <dd>粘贴（系统剪贴板）</dd>
               </div>
             </dl>
           </section>

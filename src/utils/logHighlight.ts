@@ -1,11 +1,11 @@
 /**
  * 日志行语法高亮：为无 ANSI 转义序列的纯文本日志注入颜色。
  *
- * 增强功能：
- * - 结构化 JSON 日志解析与美化（Logstash / Spring Boot JSON / 通用 JSON Lines）
- * - 框架格式适配（Spring Boot / Logback / Log4j2）
- * - 更多模式：SQL / URL / IP / 堆栈跟踪 / JSON 键值 / TraceID / 数值
- * - 颜色对比度提升（brightCyan / bold / 背景色微提示）
+ * 重要约束（避免终端排版错乱）：
+ * - 只处理「看起来像完整日志行」的文本；交互式 TUI / 提示符 / 进度条一律透传。
+ * - 使用流式 UTF-8 解码器，避免中文等多字节字符被 WebSocket 分片截断。
+ * - 行尾含 ESC / CSI 未完成序列时不缓冲高亮，直接透传，避免破坏远端光标状态。
+ * - 含 `\r` 的行（进度条、htop 刷新）不做高亮，防止注入 ANSI 后列宽错位。
  */
 
 // ============================ ANSI SGR 颜色码 ============================
@@ -35,8 +35,8 @@ const SGR = {
   bgYellow: "\x1b[43m",
 } as const;
 
-/** 行内是否已含 ANSI 转义序列 */
-const HAS_ANSI = /\x1b\[[0-9;]*m/;
+/** 行内是否已含任意 ESC 控制序列（含 CSI / OSC） */
+const HAS_ESC = /\x1b/;
 
 // ============================ 正则模式 ============================
 
@@ -69,8 +69,9 @@ const URL_RE = /https?:\/\/[^\s"'<>]+/g;
 /** IP 地址 */
 const IP_RE = /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{1,5}))?\b/g;
 
-/** SQL 关键字 */
-const SQL_RE = /\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|FROM|WHERE|JOIN|INNER|LEFT|RIGHT|GROUP|ORDER|HAVING|LIMIT|VALUES|SET|INTO|TABLE|INDEX|ON|AND|OR|NOT|NULL|DEFAULT|PRIMARY|KEY|FOREIGN|REFERENCES|UNIQUE|DISTINCT|AS|UNION|ALL|EXISTS|BETWEEN|LIKE|IN|IS|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK)\b/gi;
+/** SQL 关键字（仅在已判定为日志行后使用，避免误伤 shell） */
+const SQL_RE =
+  /\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|FROM|WHERE|JOIN|INNER|LEFT|RIGHT|GROUP|ORDER|HAVING|LIMIT|VALUES|SET|INTO|TABLE|INDEX|ON|AND|OR|NOT|NULL|DEFAULT|PRIMARY|KEY|FOREIGN|REFERENCES|UNIQUE|DISTINCT|AS|UNION|ALL|EXISTS|BETWEEN|LIKE|IN|IS|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK)\b/gi;
 
 /** 堆栈跟踪行：at xxx.yyy(File.java:NNN) */
 const STACK_TRACE_RE = /^\s+at\s+([^\s(]+)\(([^:)]+)(?::(\d+))?\)/;
@@ -81,64 +82,81 @@ const JSON_KV_RE = /"([^"]+)"(\s*):(\s*)/;
 /** 独立数值（前后非字母数字） */
 const NUMBER_RE = /(?<![a-zA-Z_$])(-?\d+\.?\d+)(?![a-zA-Z_$])/g;
 
-/** Trace/Span ID：[trace-id:xxx] 或 traceId=xxx */
-const TRACE_ID_RE = /(?:\[?(?:trace[-_ ]?id|span[-_ ]?id|request[-_ ]?id|correlation[-_ ]?id)[:=]\s*([a-f0-9-]{8,36})\]?)/gi;
+/** Trace/Span ID */
+const TRACE_ID_RE =
+  /(?:\[?(?:trace[-_ ]?id|span[-_ ]?id|request[-_ ]?id|correlation[-_ ]?id)[:=]\s*([a-f0-9-]{8,36})\]?)/gi;
 
 // ============================ 框架格式检测 ============================
 
-/** Spring Boot 默认格式：yyyy-MM-dd HH:mm:ss.SSS  LEVEL [thread] class : message */
 const SPRING_BOOT_RE =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+(INFO|WARN|ERROR|DEBUG|TRACE|FATAL)\s+\[([^\]]+)\]\s+([^\s:]+)\s*:\s*(.*)/;
 
-/** Logback 经典格式：yyyy-MM-dd HH:mm:ss [thread] LEVEL  logger - message */
 const LOGBACK_RE =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[([^\]]+)\]\s+(INFO|WARN|ERROR|DEBUG|TRACE|FATAL)\s+([^\s-]+)\s+-\s*(.*)/;
 
-/** Log4j2 格式：yyyy-MM-dd HH:mm:ss,SSS [thread] LEVEL  logger - message */
 const LOG4J2_RE =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\s+\[([^\]]+)\]\s+(INFO|WARN|ERROR|DEBUG|TRACE|FATAL)\s+([^\s-]+)\s+-\s*(.*)/;
 
 // ============================ 辅助函数 ============================
 
-/** 判断一行是否像日志行 */
+/**
+ * 判断一行是否像「可安全高亮」的日志行。
+ * 比旧版更严格：单独出现 INFO/ERROR 不再触发，避免误伤 vim/htop/提示符。
+ */
 function looksLikeLogLine(line: string): boolean {
   if (!line.trim()) return false;
-  if (HAS_ANSI.test(line)) return false;
-  if (TIMESTAMP_RE.test(line)) return true;
-  if (/\[(?:ERROR|WARN|INFO|DEBUG|TRACE|FATAL)\]/i.test(line)) return true;
-  if (/\b(?:ERROR|WARN|INFO|DEBUG|FATAL|TRACE)\b/i.test(line)) return true;
-  if (/\b(?:Exception|Error):/.test(line)) return true;
-  if (SPRING_BOOT_RE.test(line)) return true;
-  if (LOGBACK_RE.test(line)) return true;
-  if (LOG4J2_RE.test(line)) return true;
+  // 已有 ESC / 含回车刷新 → 交互输出，绝不注入
+  if (HAS_ESC.test(line) || line.includes("\r")) return false;
+
+  // 框架格式（最可靠）
+  if (SPRING_BOOT_RE.test(line) || LOGBACK_RE.test(line) || LOG4J2_RE.test(line)) {
+    return true;
+  }
+  // 时间戳开头 + 级别，才视为日志（单独级别词太容易误伤）
+  if (TIMESTAMP_RE.test(line)) {
+    if (/\[(?:ERROR|WARN|INFO|DEBUG|TRACE|FATAL)\]/i.test(line)) return true;
+    if (/\b(?:ERROR|WARN|INFO|DEBUG|FATAL|TRACE)\b/i.test(line)) return true;
+    if (/\b(?:Exception|Error):/.test(line)) return true;
+    return false;
+  }
+  // 堆栈跟踪续行
+  if (STACK_TRACE_RE.test(line)) return true;
+  // JSON Lines：以 { 开头且能 parse
+  const trimmed = line.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === "object") {
+        const o = obj as Record<string, unknown>;
+        if (o.level || o.severity || o["@timestamp"] || o.message || o.msg) {
+          return true;
+        }
+      }
+    } catch {
+      /* 非 JSON */
+    }
+  }
   return false;
 }
 
-/** 尝试解析 JSON 日志行 */
 function tryParseJsonLog(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed.startsWith("{")) return null;
-
   try {
     const obj = JSON.parse(trimmed);
     if (typeof obj !== "object" || obj === null) return null;
-    return formatJsonLog(obj);
+    return formatJsonLog(obj as Record<string, unknown>);
   } catch {
     return null;
   }
 }
 
-/** 将 JSON 日志对象格式化为带颜色的字符串 */
 function formatJsonLog(obj: Record<string, unknown>): string {
   const parts: string[] = [];
-
-  // 时间戳
   const ts = obj["@timestamp"] ?? obj.timestamp ?? obj.time ?? obj.ts;
   if (typeof ts === "string") {
     parts.push(`${SGR.dim}${SGR.brightBlue}${ts}${SGR.reset}`);
   }
-
-  // 级别
   const level = (obj.level ?? obj.severity ?? obj.lvl) as string | undefined;
   if (typeof level === "string") {
     const levelUpper = level.toUpperCase();
@@ -149,38 +167,42 @@ function formatJsonLog(obj: Record<string, unknown>): string {
     else if (/DEBUG|TRACE/.test(levelUpper)) color = SGR.dim + SGR.brightBlack;
     parts.push(`${color}${levelUpper}${SGR.reset}`);
   }
-
-  // Logger / thread
-  const logger = obj.logger_name ?? obj.logger ?? obj["logger_name"];
+  const logger = obj.logger_name ?? obj.logger;
   if (typeof logger === "string") {
     parts.push(`${SGR.magenta}${logger}${SGR.reset}`);
   }
-
   const thread = obj.thread_name ?? obj.thread ?? obj.tid;
   if (typeof thread === "string") {
     parts.push(`${SGR.dim}[${thread}]${SGR.reset}`);
   }
-
-  // 消息
   const msg = obj.message ?? obj.msg ?? obj["@message"];
   if (typeof msg === "string") {
     parts.push(`${SGR.white}${msg}${SGR.reset}`);
   }
-
-  // 其他字段
   const knownKeys = new Set([
-    "@timestamp", "timestamp", "time", "ts",
-    "level", "severity", "lvl",
-    "logger_name", "logger", "thread_name", "thread", "tid",
-    "message", "msg", "@message",
+    "@timestamp",
+    "timestamp",
+    "time",
+    "ts",
+    "level",
+    "severity",
+    "lvl",
+    "logger_name",
+    "logger",
+    "thread_name",
+    "thread",
+    "tid",
+    "message",
+    "msg",
+    "@message",
   ]);
-
   for (const [key, value] of Object.entries(obj)) {
     if (knownKeys.has(key)) continue;
     const valStr = typeof value === "string" ? value : JSON.stringify(value);
-    parts.push(`${SGR.cyan}${key}${SGR.dim}=${SGR.reset}${SGR.green}${valStr}${SGR.reset}`);
+    parts.push(
+      `${SGR.cyan}${key}${SGR.dim}=${SGR.reset}${SGR.green}${valStr}${SGR.reset}`
+    );
   }
-
   return parts.join(" ");
 }
 
@@ -232,7 +254,10 @@ function highlightExceptions(line: string): string {
 }
 
 function highlightUrls(line: string): string {
-  return line.replace(URL_RE, (m) => `${SGR.underline}${SGR.brightCyan}${m}${SGR.reset}`);
+  return line.replace(
+    URL_RE,
+    (m) => `${SGR.underline}${SGR.brightCyan}${m}${SGR.reset}`
+  );
 }
 
 function highlightIps(line: string): string {
@@ -255,8 +280,9 @@ function highlightStackTrace(line: string): string {
 }
 
 function highlightJsonKv(line: string): string {
-  return line.replace(JSON_KV_RE, (_m, key, sep1, sep2) =>
-    `${SGR.cyan}"${key}"${SGR.reset}${sep1}:${sep2}`
+  return line.replace(
+    JSON_KV_RE,
+    (_m, key, sep1, sep2) => `${SGR.cyan}"${key}"${SGR.reset}${sep1}:${sep2}`
   );
 }
 
@@ -268,10 +294,7 @@ function highlightTraceIds(line: string): string {
   return line.replace(TRACE_ID_RE, (m) => `${SGR.magenta}${m}${SGR.reset}`);
 }
 
-// ============================ 框架格式解析 ============================
-
 function tryFrameworkFormat(line: string): string | null {
-  // Spring Boot
   let m = line.match(SPRING_BOOT_RE);
   if (m) {
     const [, ts, level, thread, cls, msg] = m;
@@ -284,8 +307,6 @@ function tryFrameworkFormat(line: string): string | null {
       msg,
     ].join("  ");
   }
-
-  // Logback
   m = line.match(LOGBACK_RE);
   if (m) {
     const [, ts, thread, level, logger, msg] = m;
@@ -298,8 +319,6 @@ function tryFrameworkFormat(line: string): string | null {
       msg,
     ].join("  ");
   }
-
-  // Log4j2
   m = line.match(LOG4J2_RE);
   if (m) {
     const [, ts, thread, level, logger, msg] = m;
@@ -312,7 +331,6 @@ function tryFrameworkFormat(line: string): string | null {
       msg,
     ].join("  ");
   }
-
   return null;
 }
 
@@ -325,21 +343,16 @@ function getLevelColor(level: string): string {
   return SGR.brightCyan;
 }
 
-// ============================ 主高亮入口 ============================
-
-/** 对单行日志注入 ANSI 颜色 */
-function highlightLogLine(line: string): string {
+/** 对单行日志注入 ANSI 颜色；非日志行原样返回 */
+export function highlightLogLine(line: string): string {
   if (!looksLikeLogLine(line)) return line;
 
-  // 1. 尝试 JSON 日志解析
   const jsonResult = tryParseJsonLog(line);
   if (jsonResult) return jsonResult;
 
-  // 2. 尝试框架格式解析
   const fwResult = tryFrameworkFormat(line);
   if (fwResult) return fwResult;
 
-  // 3. 通用模式高亮
   let result = highlightTimestamp(line);
   result = highlightBracketLevels(result);
   result = highlightLevels(result);
@@ -359,19 +372,18 @@ function highlightLogLine(line: string): string {
 
 /**
  * 创建流式日志高亮转换器。
- * 处理 WebSocket 分片数据，对完整行（含 \n）注入颜色。
- *
- * 不缓冲不完整行——交互式终端的回显和提示符需要实时显示，
- * 缓冲会导致输入不可见直到按回车。只有完整行才做高亮处理，
- * 不完整的尾部数据直接透传。
+ * - 流式 UTF-8 解码，修复中文分片乱码
+ * - 完整行才高亮；不完整尾部透传
  */
 export function createLogHighlighter() {
-  /** 将二进制/字符串 chunk 转为高亮后的 Uint8Array */
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const encoder = new TextEncoder();
+
   function transform(chunk: ArrayBuffer | string): Uint8Array {
     const text =
       typeof chunk === "string"
         ? chunk
-        : new TextDecoder("utf-8", { fatal: false }).decode(chunk);
+        : decoder.decode(chunk, { stream: true });
 
     const parts: string[] = [];
     let lastIdx = 0;
@@ -384,17 +396,18 @@ export function createLogHighlighter() {
       }
     }
 
-    // 不完整的尾部数据（无 \n）直接透传，不缓冲
     if (lastIdx < text.length) {
       parts.push(text.slice(lastIdx));
     }
 
-    return new TextEncoder().encode(parts.join(""));
+    return encoder.encode(parts.join(""));
   }
 
-  /** flush 空操作——无缓冲区，所有数据已在 transform 中即时输出 */
   function flush(): Uint8Array {
-    return new Uint8Array(0);
+    // 冲刷 decoder 中可能残留的不完整 UTF-8 尾字节
+    const tail = decoder.decode();
+    if (!tail) return new Uint8Array(0);
+    return encoder.encode(tail);
   }
 
   return { transform, flush };

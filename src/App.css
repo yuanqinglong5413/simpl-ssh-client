@@ -450,18 +450,29 @@ input {
   position: relative;
   overflow: hidden;
 }
+/*
+ * 用 visibility 隐藏非活动 Tab，而不是 display:none。
+ * display:none 会导致 xterm FitAddon 量到 0 尺寸，远端 PTY 与本地列宽不一致，
+ * 表现为 vim/htop/中文输出排版错乱。visibility 仍保留布局盒，可正确 fit。
+ */
 .pane {
   position: absolute;
   inset: 0;
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
 }
 .pane.active {
-  display: block;
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 1;
 }
 .terminal-host {
   position: absolute;
   inset: 0;
   padding: 6px 8px;
+  /* 减少字体亚像素抖动导致的偶发错位 */
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ---- 空状态 ---- */

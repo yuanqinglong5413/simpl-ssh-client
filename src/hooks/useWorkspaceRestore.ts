@@ -52,6 +52,23 @@ export function useWorkspaceRestore({
         const snapshot: WorkspaceSnapshot = JSON.parse(raw);
         if (!snapshot.tabs || snapshot.tabs.length === 0) return;
 
+        // 先批量预热凭据：把所有待恢复 SSH Tab 的 profile（含跳板）读入加密缓存，
+        // 避免串行连接时 macOS 钥匙串连续弹多次授权框。
+        const profileIds = Array.from(
+          new Set(
+            snapshot.tabs
+              .map((wt) => wt.profileId)
+              .filter((id): id is string => !!id && profiles.some((p) => p.id === id))
+          )
+        );
+        if (profileIds.length > 0) {
+          try {
+            await invoke("profile_warm_credentials", { ids: profileIds });
+          } catch {
+            // 预热失败不阻断恢复；后续 profile_connect 会各自回落钥匙串
+          }
+        }
+
         const restoredTabs: Tab[] = [];
         let restoredActiveId: string | null = null;
 

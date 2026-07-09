@@ -6,6 +6,8 @@ import type { SplitDir, SplitNode } from "../types";
 type Props = {
   layout: SplitNode;
   sessionId: string;
+  /** 当前 Tab 是否可见；激活时强制同步各 pane 的 PTY 尺寸 */
+  active?: boolean;
   /** 整棵树被替换时回调（分屏/调比例）。 */
   onChange: (next: SplitNode) => void;
   /** 根叶子被关闭（整个 Tab 没有面板了）→ 关闭 Tab。 */
@@ -21,6 +23,7 @@ type Props = {
 export function SplitView({
   layout,
   sessionId,
+  active = true,
   onChange,
   onCloseAll,
   onConnectionLost,
@@ -29,6 +32,7 @@ export function SplitView({
     <NodeView
       node={layout}
       sessionId={sessionId}
+      active={active}
       onConnectionLost={onConnectionLost}
       onReplace={(n) => {
         if (n === null) onCloseAll();
@@ -44,11 +48,13 @@ type Replace = (next: SplitNode | null) => void;
 function NodeView({
   node,
   sessionId,
+  active,
   onReplace,
   onConnectionLost,
 }: {
   node: SplitNode;
   sessionId: string;
+  active: boolean;
   onReplace: Replace;
   onConnectionLost?: (sessionId: string) => void;
 }) {
@@ -68,6 +74,7 @@ function NodeView({
         <TerminalPane
           sessionId={node.sessionId}
           paneId={node.paneId}
+          active={active}
           onConnectionLost={onConnectionLost}
         />
         <div className="pane-actions">
@@ -133,6 +140,7 @@ function NodeView({
         <NodeView
           node={children[0]}
           sessionId={sessionId}
+          active={active}
           onConnectionLost={onConnectionLost}
           onReplace={(n) => replaceChild(0, n)}
         />
@@ -142,6 +150,7 @@ function NodeView({
         <NodeView
           node={children[1]}
           sessionId={sessionId}
+          active={active}
           onConnectionLost={onConnectionLost}
           onReplace={(n) => replaceChild(1, n)}
         />

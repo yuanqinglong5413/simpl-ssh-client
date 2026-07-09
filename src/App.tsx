@@ -663,11 +663,13 @@ function App() {
                     cwd={
                       projects.find((p) => p.id === t.projectId)?.local_path ?? ""
                     }
+                    active={t.id === activeTabId}
                   />
                 ) : (
                   <SplitView
                     layout={t.layout!}
                     sessionId={t.sessionId}
+                    active={t.id === activeTabId}
                     onChange={(n) => updateTabLayout(t.id, n)}
                     onCloseAll={() => closeTab(t.id)}
                     onConnectionLost={handleConnectionLost}
