@@ -4,10 +4,12 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Copy,
   File as FileIcon,
   Folder,
   FolderPlus,
   FolderSync,
+  Lock,
   Pencil,
   RefreshCw,
   Trash2,
@@ -187,6 +189,38 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
     }
   }
 
+  async function chmod() {
+    if (!selected) return;
+    const mode = window.prompt(`设置 “${selected}” 权限（如 755）`, "644");
+    if (!mode) return;
+    setBusy(true);
+    setError("");
+    try {
+      await invoke("sftp_chmod", { sessionId, path: join(selected), mode });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyFile() {
+    if (!selected) return;
+    const dst = window.prompt(`复制 “${selected}” 到`, `${selected}_copy`);
+    if (!dst) return;
+    setBusy(true);
+    setError("");
+    try {
+      await invoke("sftp_copy", { sessionId, src: join(selected), dst: join(dst) });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function onPathEnter(e: KeyboardEvent) {
     if (e.key === "Enter") load(pathInput);
   }
@@ -217,6 +251,12 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
         </button>
         <button className="icon-btn danger" title="删除" onClick={remove} disabled={busy || !selected}>
           <Trash2 size={15} />
+        </button>
+        <button className="icon-btn" title="权限 (chmod)" onClick={chmod} disabled={busy || !selected}>
+          <Lock size={14} />
+        </button>
+        <button className="icon-btn" title="复制" onClick={copyFile} disabled={busy || !selected}>
+          <Copy size={14} />
         </button>
         <button className="icon-btn" title="目录同步" onClick={() => setShowSync(true)}>
           <FolderSync size={15} />

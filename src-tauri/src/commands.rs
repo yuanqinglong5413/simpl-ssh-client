@@ -263,6 +263,46 @@ pub async fn sftp_remove(
     res.map_err(|e| e.to_string())
 }
 
+/// 修改远程文件/目录权限（chmod，如 "755"）。经 exec channel 执行。
+#[tauri::command]
+pub async fn sftp_chmod(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    path: String,
+    mode: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let cmd = format!("chmod {} {}", mode, crate::session::git_ops::shellescape(&path));
+    crate::session::git_ops::exec_on_session(&entry.handle, &cmd)
+        .await
+        .map(|_| ())
+}
+
+/// 远程复制（cp -r）。
+#[tauri::command]
+pub async fn sftp_copy(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    src: String,
+    dst: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let cmd = format!(
+        "cp -r {} {}",
+        crate::session::git_ops::shellescape(&src),
+        crate::session::git_ops::shellescape(&dst)
+    );
+    crate::session::git_ops::exec_on_session(&entry.handle, &cmd)
+        .await
+        .map(|_| ())
+}
+
 // ----------------------------  选框（不传输）-------------------------------
 
 /// 弹本地文件选择框（可多选），返回所选文件的绝对路径列表。不执行传输。

@@ -72,7 +72,7 @@ pub(crate) async fn exec_git(
 }
 
 /// 在会话上执行命令并收集 stdout+stderr。
-async fn exec_on_session(
+pub(crate) async fn exec_on_session(
     handle: &Arc<russh::client::Handle<super::ClientHandler>>,
     command: &str,
 ) -> Result<String, String> {
@@ -108,7 +108,7 @@ async fn exec_on_session(
 }
 
 /// 简单的 shell 转义（单引号包裹）。
-fn shellescape(s: &str) -> String {
+pub(crate) fn shellescape(s: &str) -> String {
     if s.contains('\'') {
         format!("'{}'", s.replace('\'', "'\\''"))
     } else {
