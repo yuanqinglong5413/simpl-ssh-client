@@ -4,6 +4,7 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import App from "./App";
+import "./i18n";
 import { SettingsProvider } from "./settings/SettingsProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
 

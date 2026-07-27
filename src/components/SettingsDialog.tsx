@@ -4,6 +4,7 @@ import { FONT_OPTIONS } from "../settings/types";
 import { useSettings } from "../settings/SettingsProvider";
 import { useUpdater } from "../hooks/useUpdater";
 import { KnownHostsDialog } from "./KnownHostsDialog";
+import { changeLanguage } from "../i18n";
 
 type Props = {
   open: boolean;
@@ -193,6 +194,23 @@ export function SettingsDialog({ open, onClose }: Props) {
               >
                 <Shield size={14} /> 已知主机管理
               </button>
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">语言 / Language</h3>
+            <div className="field">
+              <select
+                value={settings.language}
+                onChange={(e) => {
+                  const lang = e.target.value as "zh" | "en";
+                  updateSettings({ language: lang });
+                  changeLanguage(lang);
+                }}
+              >
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+              </select>
             </div>
           </section>
 

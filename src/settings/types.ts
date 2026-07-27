@@ -23,6 +23,8 @@ export type AppSettings = {
   enableX11: boolean;
   /** 启动时检查更新 */
   checkUpdatesOnStart: boolean;
+  /** 界面语言 */
+  language: "zh" | "en";
 };
 
 export const SETTINGS_STORAGE_KEY = "simpl-ssh-settings";
@@ -38,6 +40,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxReconnectAttempts: 5,
   enableX11: false,
   checkUpdatesOnStart: true,
+  language: "zh",
 };
 
 /** 可选终端字体列表 */

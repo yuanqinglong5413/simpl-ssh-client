@@ -1,4 +1,5 @@
 import { Folder, Activity, Settings, X, GitBranch, Radio, TerminalSquare } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { SessionInfo } from "../types";
 import { ThemePicker } from "./ThemePicker";
 
@@ -29,17 +30,20 @@ export function StatusBar({
   onToggleBroadcast,
   onOpenSnippets,
 }: Props) {
+  const { t } = useTranslation();
   return (
     <div className="statusbar">
       <div className="status-left">
         <span className={`pulse ${session ? "" : "idle"}`} />
         {session ? (
           <span>
-            已连接 · {session.user}@{session.host}:{session.port}
+            {t("status.connected")} · {session.user}@{session.host}:{session.port}
             {session.jump_via ? `（经 ${session.jump_via}）` : ""}
           </span>
         ) : (
-          <span>就绪 · {tabCount} 个打开的面板</span>
+          <span>
+            {t("status.ready")} · {tabCount} {t("status.panels")}
+          </span>
         )}
       </div>
       <div className="status-right">
@@ -50,7 +54,7 @@ export function StatusBar({
               onClick={onOpenMonitor}
               title="为当前会话打开系统监控"
             >
-              <Activity size={13} /> 监控
+              <Activity size={13} /> {t("status.monitor")}
             </button>
             <button
               className="status-action"
@@ -64,14 +68,14 @@ export function StatusBar({
               onClick={onOpenSftp}
               title="为当前会话打开文件面板"
             >
-              <Folder size={13} /> 文件
+              <Folder size={13} /> {t("status.files")}
             </button>
             <button
               className="status-action danger"
               onClick={onDisconnect}
               title="断开当前会话"
             >
-              <X size={13} /> 断开
+              <X size={13} /> {t("status.disconnect")}
             </button>
             <span className="status-sep" />
           </>
@@ -81,21 +85,21 @@ export function StatusBar({
           onClick={onToggleBroadcast}
           title="多会话广播输入（开关）：开启后输入同步到所有已打开终端"
         >
-          <Radio size={13} /> 广播
+          <Radio size={13} /> {t("status.broadcast")}
         </button>
         <button
           className="status-action"
           onClick={onOpenSnippets}
           title="常用命令片段（管理 / ⌘K 搜「片段:」注入终端）"
         >
-          <TerminalSquare size={13} /> 片段
+          <TerminalSquare size={13} /> {t("status.snippets")}
         </button>
         <button
           className="status-action"
           onClick={onOpenSettings}
           title="设置 (Ctrl+,)"
         >
-          <Settings size={13} /> 设置
+          <Settings size={13} /> {t("status.settings")}
         </button>
         <span className="status-sep" />
         <ThemePicker />
