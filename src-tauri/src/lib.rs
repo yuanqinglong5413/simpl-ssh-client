@@ -148,6 +148,7 @@ pub fn run() {
             commands::snippet_update,
             commands::snippet_delete,
             // 本地文件
+            commands::local_home_dir,
             commands::local_list_dir,
             commands::local_read_file,
             commands::local_write_file,

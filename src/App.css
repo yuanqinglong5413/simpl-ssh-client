@@ -818,6 +818,46 @@ input {
   color: var(--muted);
   font-size: 12.5px;
 }
+.sftp-dual {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 1px;
+  min-height: 0;
+  background: var(--border);
+}
+.sftp-col {
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.sftp-col-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.sftp-col-path {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sftp-col-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 8px;
+  background: var(--panel);
+}
 .sftp-row {
   display: grid;
   grid-template-columns: 22px 1fr 92px 132px;

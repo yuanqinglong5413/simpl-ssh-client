@@ -1,37 +1,41 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  ArrowLeft,
+  ArrowRight,
   ArrowUp,
-  Download,
   File as FileIcon,
   Folder,
   FolderPlus,
-  FolderUp,
   FolderSync,
   Pencil,
   RefreshCw,
   Trash2,
-  Upload,
 } from "lucide-react";
 import type { FileEntry } from "../types";
 import { SyncDialog } from "./SyncDialog";
 
 type Props = {
   sessionId: string;
-  /** 双击文件时在编辑器中打开 */
+  /** 双击远程文件时在编辑器中打开 */
   onFileOpen?: (filePath: string) => void;
 };
 
 /**
- * SFTP 文件面板：浏览远程文件系统，进入目录、上传/下载（入传输队列，非阻塞）、
- * 新建 / 重命名 / 删除。上传/下载不再阻塞 UI——选好本地路径即入队，
- * 进度与状态见全局 TransferPanel。
+ * SFTP 双面板：左侧本地 + 右侧远程，中间跨面板传输按钮（→ 上传 / ← 下载）。
+ * 传输走全局 TransferQueue（非阻塞），进度/暂停/重试见 TransferPanel。
  */
 export function SftpPane({ sessionId, onFileOpen }: Props) {
+  // 远程侧
   const [cwd, setCwd] = useState("");
   const [pathInput, setPathInput] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  // 本地侧
+  const [localCwd, setLocalCwd] = useState("");
+  const [localEntries, setLocalEntries] = useState<FileEntry[]>([]);
+  const [localSelected, setLocalSelected] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,77 +60,79 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
     }
   }
 
+  async function loadLocal(path?: string) {
+    setError("");
+    try {
+      const dir = path ?? localCwd;
+      if (!dir) {
+        const home = await invoke<string>("local_home_dir");
+        return loadLocal(home);
+      }
+      const list = await invoke<FileEntry[]>("local_list_dir", { path: dir });
+      setLocalCwd(dir);
+      setLocalEntries(list);
+      setLocalSelected(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   useEffect(() => {
     load();
+    loadLocal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  const sep = localCwd.includes("\\") ? "\\" : "/";
   const join = (name: string) => (cwd === "/" ? `/${name}` : `${cwd}/${name}`);
   const parent = () => "/" + cwd.split("/").filter(Boolean).slice(0, -1).join("/");
+  const localJoin = (name: string) =>
+    localCwd.endsWith(sep) ? `${localCwd}${name}` : `${localCwd}${sep}${name}`;
+  const localParent = () => {
+    const parts = localCwd.split(/[\\/]/).filter(Boolean);
+    parts.pop();
+    if (parts.length === 0) return localCwd;
+    return (localCwd.startsWith("/") ? "/" : "") + parts.join(sep);
+  };
 
   function enter(e: FileEntry) {
     if (e.is_dir) {
       load(join(e.name));
     } else if (onFileOpen) {
       onFileOpen(join(e.name));
-    } else {
-      download(join(e.name));
     }
   }
-
-  function baseName(p: string): string {
-    return p.split("/").filter(Boolean).pop() ?? p;
+  function localEnter(e: FileEntry) {
+    if (e.is_dir) loadLocal(localJoin(e.name));
   }
 
-  async function upload() {
+  /** → 上传：本地选中 → 远程当前目录 */
+  async function crossUpload() {
+    if (!localSelected) return;
+    const entry = localEntries.find((e) => e.name === localSelected);
     setError("");
     try {
-      const files = await invoke<string[]>("sftp_select_local_files");
-      for (const p of files) {
-        await invoke("transfer_enqueue", {
-          sessionId,
-          kind: "upload",
-          localPath: p,
-          remotePath: join(baseName(p)),
-        });
-      }
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function uploadDir() {
-    setError("");
-    try {
-      const folder = await invoke<string | null>("sftp_select_folder", {
-        title: "选择要上传的文件夹",
-      });
-      if (!folder) return;
       await invoke("transfer_enqueue", {
         sessionId,
-        kind: "uploadDir",
-        localPath: folder,
-        remotePath: join(baseName(folder)),
+        kind: entry?.is_dir ? "uploadDir" : "upload",
+        localPath: localJoin(localSelected),
+        remotePath: join(localSelected),
       });
     } catch (e) {
       setError(String(e));
     }
   }
 
-  async function download(remotePath: string) {
+  /** ← 下载：远程选中 → 本地当前目录 */
+  async function crossDownload() {
+    if (!selected) return;
     setError("");
     try {
-      const dest = await invoke<string | null>("sftp_select_folder", {
-        title: "选择保存位置（下载到该文件夹下）",
-      });
-      if (!dest) return;
-      const name = baseName(remotePath);
-      const local = dest.endsWith("/") ? `${dest}${name}` : `${dest}/${name}`;
       await invoke("transfer_enqueue", {
         sessionId,
         kind: "download",
-        localPath: local,
-        remotePath,
+        localPath: localJoin(selected),
+        remotePath: join(selected),
       });
     } catch (e) {
       setError(String(e));
@@ -155,11 +161,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
     setBusy(true);
     setError("");
     try {
-      await invoke("sftp_rename", {
-        sessionId,
-        from: join(selected),
-        to: join(to),
-      });
+      await invoke("sftp_rename", { sessionId, from: join(selected), to: join(to) });
       await load();
     } catch (e) {
       setError(String(e));
@@ -176,11 +178,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
     setBusy(true);
     setError("");
     try {
-      await invoke("sftp_remove", {
-        sessionId,
-        path: join(selected),
-        isDir: entry.is_dir,
-      });
+      await invoke("sftp_remove", { sessionId, path: join(selected), isDir: entry.is_dir });
       await load();
     } catch (e) {
       setError(String(e));
@@ -196,12 +194,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
   return (
     <div className="sftp">
       <div className="sftp-toolbar">
-        <button
-          className="icon-btn"
-          title="上一级"
-          onClick={() => load(parent())}
-          disabled={!cwd}
-        >
+        <button className="icon-btn" title="远程上一级" onClick={() => load(parent())} disabled={!cwd}>
           <ArrowUp size={15} />
         </button>
         <input
@@ -212,84 +205,91 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
           spellCheck={false}
           placeholder="/"
         />
-        <button className="icon-btn" title="刷新" onClick={() => load()}>
+        <button className="icon-btn" title="刷新远程" onClick={() => load()}>
           <RefreshCw size={15} />
         </button>
         <div className="sftp-sep" />
-        <button
-          className="icon-btn"
-          title="新建文件夹"
-          onClick={mkdir}
-          disabled={busy}
-        >
+        <button className="icon-btn" title="新建远程文件夹" onClick={mkdir} disabled={busy}>
           <FolderPlus size={15} />
         </button>
-        <button className="icon-btn" title="上传文件" onClick={upload}>
-          <Upload size={15} />
-        </button>
-        <button className="icon-btn" title="上传文件夹" onClick={uploadDir}>
-          <FolderUp size={15} />
-        </button>
-        <button
-          className="icon-btn"
-          title="目录同步"
-          onClick={() => setShowSync(true)}
-        >
-          <FolderSync size={15} />
-        </button>
-        <button
-          className="icon-btn"
-          title="下载"
-          onClick={() => selected && download(join(selected))}
-          disabled={!selected}
-        >
-          <Download size={15} />
-        </button>
-        <button
-          className="icon-btn"
-          title="重命名"
-          onClick={rename}
-          disabled={busy || !selected}
-        >
+        <button className="icon-btn" title="重命名" onClick={rename} disabled={busy || !selected}>
           <Pencil size={14} />
         </button>
-        <button
-          className="icon-btn danger"
-          title="删除"
-          onClick={remove}
-          disabled={busy || !selected}
-        >
+        <button className="icon-btn danger" title="删除" onClick={remove} disabled={busy || !selected}>
           <Trash2 size={15} />
+        </button>
+        <button className="icon-btn" title="目录同步" onClick={() => setShowSync(true)}>
+          <FolderSync size={15} />
         </button>
       </div>
 
       {error && <div className="sftp-error">{error}</div>}
 
-      <div className="sftp-list">
-        {loading ? (
-          <div className="sftp-empty">加载中…</div>
-        ) : entries.length === 0 ? (
-          <div className="sftp-empty">空目录</div>
-        ) : (
-          entries.map((e) => (
-            <div
-              key={e.name}
-              className={`sftp-row ${selected === e.name ? "sel" : ""}`}
-              onClick={() => setSelected(e.name)}
-              onDoubleClick={() => enter(e)}
+      <div className="sftp-dual">
+        <div className="sftp-col">
+          <div className="sftp-col-head">
+            <button
+              className="icon-btn"
+              title="本地上一级"
+              onClick={() => loadLocal(localParent())}
             >
-              <span className="sftp-icon">
-                {e.is_dir ? <Folder size={15} /> : <FileIcon size={15} />}
-              </span>
-              <span className="sftp-name">
-                {e.name}
-                {e.is_symlink ? " →" : ""}
-              </span>
-              <span className="sftp-size">{e.is_dir ? "" : fmtSize(e.size)}</span>
-              <span className="sftp-time">{e.modified ?? ""}</span>
-            </div>
-          ))
-        )}
+              <ArrowUp size={14} />
+            </button>
+            <span className="sftp-col-path" title={localCwd}>
+              本地 · {localCwd}
+            </span>
+            <button className="icon-btn" title="刷新本地" onClick={() => loadLocal()}>
+              <RefreshCw size={13} />
+            </button>
+          </div>
+          <div className="sftp-list">
+            <FileList
+              entries={localEntries}
+              selected={localSelected}
+              onSelect={setLocalSelected}
+              onEnter={localEnter}
+              emptyHint="空目录"
+              loading={false}
+            />
+          </div>
+        </div>
+
+        <div className="sftp-col-actions">
+          <button
+            className="icon-btn"
+            title="上传 →"
+            onClick={() => crossUpload()}
+            disabled={!localSelected}
+          >
+            <ArrowRight size={18} />
+          </button>
+          <button
+            className="icon-btn"
+            title="← 下载"
+            onClick={() => crossDownload()}
+            disabled={!selected}
+          >
+            <ArrowLeft size={18} />
+          </button>
+        </div>
+
+        <div className="sftp-col">
+          <div className="sftp-col-head">
+            <span className="sftp-col-path" title={cwd}>
+              远程 · {cwd}
+            </span>
+          </div>
+          <div className="sftp-list">
+            <FileList
+              entries={entries}
+              selected={selected}
+              onSelect={setSelected}
+              onEnter={enter}
+              emptyHint="空目录"
+              loading={loading}
+            />
+          </div>
+        </div>
       </div>
 
       {showSync && (
@@ -300,6 +300,45 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
         />
       )}
     </div>
+  );
+}
+
+/** 文件列表渲染（本地/远程共用）。 */
+function FileList({
+  entries,
+  selected,
+  onSelect,
+  onEnter,
+  emptyHint,
+  loading,
+}: {
+  entries: FileEntry[];
+  selected: string | null;
+  onSelect: (name: string) => void;
+  onEnter: (e: FileEntry) => void;
+  emptyHint: string;
+  loading: boolean;
+}) {
+  if (loading) return <div className="sftp-empty">加载中…</div>;
+  if (entries.length === 0) return <div className="sftp-empty">{emptyHint}</div>;
+  return (
+    <>
+      {entries.map((e) => (
+        <div
+          key={e.name}
+          className={`sftp-row ${selected === e.name ? "sel" : ""}`}
+          onClick={() => onSelect(e.name)}
+          onDoubleClick={() => onEnter(e)}
+        >
+          <span className="sftp-icon">
+            {e.is_dir ? <Folder size={15} /> : <FileIcon size={15} />}
+          </span>
+          <span className="sftp-name">{e.name}{e.is_symlink ? " →" : ""}</span>
+          <span className="sftp-size">{e.is_dir ? "" : fmtSize(e.size)}</span>
+          <span className="sftp-time">{e.modified ?? ""}</span>
+        </div>
+      ))}
+    </>
   );
 }
 

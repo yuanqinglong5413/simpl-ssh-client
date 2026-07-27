@@ -1178,6 +1178,14 @@ pub async fn project_delete(
 
 // ==============================  本地文件  =================================
 
+/// 本地家目录绝对路径（SFTP 双面板本地侧初始目录用）。
+#[tauri::command]
+pub async fn local_home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .map(|h| h.to_string_lossy().into_owned())
+        .ok_or_else(|| "无法定位家目录".to_string())
+}
+
 /// 列出本地目录内容。
 #[tauri::command]
 pub async fn local_list_dir(path: String) -> Result<Vec<FileEntry>, String> {
