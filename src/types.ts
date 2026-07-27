@@ -105,6 +105,7 @@ export type TransferKind = "upload" | "uploadDir" | "download";
 export type TransferStatus =
   | "queued"
   | "running"
+  | "paused"
   | "done"
   | "failed"
   | "cancelled";
@@ -118,6 +119,9 @@ export type TransferTask = {
   transferred: number;
   status: TransferStatus;
   error: string | null;
+  overwrite: string;
+  retry_count: number;
+  max_retries: number;
 };
 
 export type ForwardKind = "local" | "remote" | "dynamic";

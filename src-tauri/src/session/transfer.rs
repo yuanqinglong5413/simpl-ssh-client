@@ -9,12 +9,12 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, Notify};
@@ -47,10 +47,44 @@ impl TransferKind {
     }
 }
 
+/// 同名文件覆盖策略。
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OverwriteMode {
+    #[default]
+    Overwrite,
+    /// 远端已存在则跳过。
+    Skip,
+    /// 仅当源比目标新才覆盖。
+    IfNewer,
+    /// 远端已存在则自动改名（`name (N).ext`）。
+    Rename,
+}
+
+impl OverwriteMode {
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        Ok(match s {
+            "overwrite" => Self::Overwrite,
+            "skip" => Self::Skip,
+            "ifNewer" => Self::IfNewer,
+            "rename" => Self::Rename,
+            _ => return Err(format!("unknown overwrite mode: {s}")),
+        })
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Overwrite => "overwrite",
+            Self::Skip => "skip",
+            Self::IfNewer => "ifNewer",
+            Self::Rename => "rename",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum TransferStatus {
     Queued,
     Running,
+    Paused,
     Done,
     Failed(String),
     Cancelled,
@@ -61,6 +95,7 @@ impl TransferStatus {
         match self {
             Self::Queued => "queued",
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::Done => "done",
             Self::Failed(_) => "failed",
             Self::Cancelled => "cancelled",
@@ -80,6 +115,10 @@ pub struct TransferTask {
     transferred: AtomicU64,
     status: StdMutex<TransferStatus>,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
+    retry_count: AtomicU32,
+    max_retries: u32,
+    overwrite: StdMutex<OverwriteMode>,
 }
 
 #[derive(Serialize, Clone)]
@@ -92,6 +131,9 @@ pub struct TransferTaskSnap {
     pub transferred: u64,
     pub status: String,
     pub error: Option<String>,
+    pub overwrite: String,
+    pub retry_count: u32,
+    pub max_retries: u32,
 }
 
 impl TransferTask {
@@ -110,6 +152,9 @@ impl TransferTask {
             transferred: self.transferred.load(Ordering::Relaxed),
             status: st,
             error: err,
+            overwrite: self.overwrite.lock().unwrap().as_str().to_string(),
+            retry_count: self.retry_count.load(Ordering::Relaxed),
+            max_retries: self.max_retries,
         }
     }
 
@@ -127,6 +172,7 @@ pub struct TransferQueue {
 
 impl TransferQueue {
     /// 入队一个任务，返回其 id。
+    #[allow(clippy::too_many_arguments)]
     pub async fn enqueue(
         &self,
         session_id: String,
@@ -134,6 +180,8 @@ impl TransferQueue {
         local_path: PathBuf,
         remote_path: String,
         name: String,
+        overwrite: OverwriteMode,
+        max_retries: u32,
     ) -> String {
         let task = Arc::new(TransferTask {
             id: Uuid::new_v4().to_string(),
@@ -146,6 +194,10 @@ impl TransferQueue {
             transferred: AtomicU64::new(0),
             status: StdMutex::new(TransferStatus::Queued),
             cancel: Arc::new(AtomicBool::new(false)),
+            pause: Arc::new(AtomicBool::new(false)),
+            retry_count: AtomicU32::new(0),
+            max_retries,
+            overwrite: StdMutex::new(overwrite),
         });
         let id = task.id.clone();
         self.tasks.lock().await.push_back(task);
@@ -153,16 +205,91 @@ impl TransferQueue {
         id
     }
 
-    /// 取消一个任务：设标志；仍在排队的直接标 Cancelled，运行中的在下次读片前中断。
+    /// 取消一个任务：设标志；仍在排队/已暂停的直接标 Cancelled，运行中的在下次读片前中断。
     pub async fn cancel(&self, id: &str) {
         let tasks = self.tasks.lock().await;
         if let Some(t) = tasks.iter().find(|t| t.id == id) {
             t.cancel.store(true, Ordering::Relaxed);
             let mut s = t.status.lock().unwrap();
-            if matches!(*s, TransferStatus::Queued) {
+            if matches!(*s, TransferStatus::Queued | TransferStatus::Paused) {
                 *s = TransferStatus::Cancelled;
             }
         }
+    }
+
+    /// 暂停一个任务：Queued 直接标 Paused；Running 设 pause 标志，worker 在下次读片前停下。
+    pub async fn pause(&self, id: &str) {
+        let tasks = self.tasks.lock().await;
+        if let Some(t) = tasks.iter().find(|t| t.id == id) {
+            t.pause.store(true, Ordering::Relaxed);
+            let mut s = t.status.lock().unwrap();
+            if matches!(*s, TransferStatus::Queued) {
+                *s = TransferStatus::Paused;
+            }
+        }
+    }
+
+    /// 继续一个暂停的任务：清 pause 标志，Paused→Queued 并唤醒 worker。
+    pub async fn resume(&self, id: &str) {
+        let need_notify = {
+            let tasks = self.tasks.lock().await;
+            let Some(t) = tasks.iter().find(|t| t.id == id) else {
+                return;
+            };
+            t.pause.store(false, Ordering::Relaxed);
+            let mut s = t.status.lock().unwrap();
+            if matches!(*s, TransferStatus::Paused) {
+                *s = TransferStatus::Queued;
+                true
+            } else {
+                false
+            }
+        };
+        if need_notify {
+            self.notify.notify_one();
+        }
+    }
+
+    /// 重试一个已结束（Failed/Cancelled/Done/Paused）的任务：复位并重新入队。
+    /// 批 1 为从头重传（断点续传见后续）。
+    pub async fn retry(&self, id: &str) {
+        let need_notify = {
+            let tasks = self.tasks.lock().await;
+            let Some(t) = tasks.iter().find(|t| t.id == id) else {
+                return;
+            };
+            let mut s = t.status.lock().unwrap();
+            let retryable = matches!(
+                *s,
+                TransferStatus::Failed(_) | TransferStatus::Cancelled | TransferStatus::Done | TransferStatus::Paused
+            );
+            if retryable {
+                t.cancel.store(false, Ordering::Relaxed);
+                t.pause.store(false, Ordering::Relaxed);
+                t.transferred.store(0, Ordering::Relaxed);
+                t.retry_count.fetch_add(1, Ordering::Relaxed);
+                *s = TransferStatus::Queued;
+                true
+            } else {
+                false
+            }
+        };
+        if need_notify {
+            self.notify.notify_one();
+        }
+    }
+
+    /// 清除所有已结束的任务（Done/Cancelled/Failed）。
+    pub async fn clear_done(&self) -> usize {
+        let mut guard = self.tasks.lock().await;
+        let before = guard.len();
+        guard.retain(|t| {
+            !matches!(
+                *t.status.lock().unwrap(),
+                TransferStatus::Done | TransferStatus::Cancelled | TransferStatus::Failed(_)
+            )
+        });
+        before - guard.len()
     }
 
     /// 所有任务的快照（供前端轮询）。
@@ -175,7 +302,7 @@ impl TransferQueue {
             .collect()
     }
 
-    /// 启动串行 worker（lib.rs setup 调一次）。
+    /// 启动 worker（lib.rs setup 调一次）。单 worker 串行。
     pub fn start_worker(&self, app: AppHandle) {
         let tasks = self.tasks.clone();
         let notify = self.notify.clone();
@@ -183,16 +310,21 @@ impl TransferQueue {
             loop {
                 notify.notified().await;
                 loop {
-                    // 取第一个排队中的任务并标 Running
+                    // 原子领取：find(Queued) + set(Running) 在同一锁闭包，杜绝多 worker 重复领取
                     let task = {
                         let guard = tasks.lock().await;
-                        guard
-                            .iter()
-                            .find(|t| matches!(*t.status.lock().unwrap(), TransferStatus::Queued))
-                            .cloned()
+                        let mut found = None;
+                        for t in guard.iter() {
+                            let mut s = t.status.lock().unwrap();
+                            if matches!(*s, TransferStatus::Queued) {
+                                *s = TransferStatus::Running;
+                                found = Some(t.clone());
+                                break;
+                            }
+                        }
+                        found
                     };
                     let Some(task) = task else { break };
-                    task.set_status(TransferStatus::Running);
                     let _ = app.emit("transfer://state", task.snapshot());
                     execute(&app, &task).await;
                     let _ = app.emit("transfer://state", task.snapshot());
@@ -215,6 +347,7 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
             }
         }
     };
+    let overwrite = *task.overwrite.lock().unwrap();
 
     // 总大小：单文件可精确，目录用 0（前端显示 indeterminate）
     let total: u64 = match task.kind {
@@ -238,29 +371,15 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
     let res = match task.kind {
         TransferKind::Upload | TransferKind::UploadDir => {
             upload_recursive(
-                &sftp,
-                &task.local_path,
-                &task.remote_path,
-                app,
-                &task.id,
-                &task.cancel,
-                &task.transferred,
-                total,
-            )
-            .await
+                &sftp, &task.local_path, &task.remote_path, app, &task.id,
+                &task.cancel, &task.pause, &task.transferred, total, overwrite,
+            ).await
         }
         TransferKind::Download => {
             download_recursive(
-                &sftp,
-                &task.remote_path,
-                &task.local_path,
-                app,
-                &task.id,
-                &task.cancel,
-                &task.transferred,
-                total,
-            )
-            .await
+                &sftp, &task.remote_path, &task.local_path, app, &task.id,
+                &task.cancel, &task.pause, &task.transferred, total, overwrite,
+            ).await
         }
     };
 
@@ -268,18 +387,26 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
         Ok(()) => task.set_status(TransferStatus::Done),
         Err(e) if e == "cancelled" => {
             task.set_status(TransferStatus::Cancelled);
-            // 单文件半成品 best-effort 清理
-            match task.kind {
-                TransferKind::Upload => {
-                    let _ = sftp.remove_file(&task.remote_path).await;
-                }
-                TransferKind::Download => {
-                    let _ = tokio::fs::remove_file(&task.local_path).await;
-                }
-                _ => {}
-            }
+            cleanup_partial(&sftp, task).await;
+        }
+        Err(e) if e == "paused" => {
+            // 保留半成品；批 1 resume 会从头重传（断点续传见后续）
+            task.set_status(TransferStatus::Paused);
         }
         Err(e) => task.set_status(TransferStatus::Failed(e)),
+    }
+}
+
+/// 清理单文件半成品（仅 cancel 用；paused/failed 保留以便后续续传）。
+async fn cleanup_partial(sftp: &SftpSession, task: &TransferTask) {
+    match task.kind {
+        TransferKind::Upload => {
+            let _ = sftp.remove_file(&task.remote_path).await;
+        }
+        TransferKind::Download => {
+            let _ = tokio::fs::remove_file(&task.local_path).await;
+        }
+        _ => {}
     }
 }
 
@@ -301,11 +428,16 @@ async fn upload_recursive(
     app: &AppHandle,
     task_id: &str,
     cancel: &AtomicBool,
+    pause: &AtomicBool,
     transferred: &AtomicU64,
     total: u64,
+    overwrite: OverwriteMode,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
+    }
+    if pause.load(Ordering::Relaxed) {
+        return Err("paused".into());
     }
     if local.is_dir() {
         let _ = sftp.create_dir(remote).await;
@@ -316,23 +448,23 @@ async fn upload_recursive(
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
+            if pause.load(Ordering::Relaxed) {
+                return Err("paused".into());
+            }
             let name = entry.file_name().to_string_lossy().to_string();
             let rpath = join_remote(remote, &name);
             Box::pin(upload_recursive(
-                sftp,
-                &entry.path(),
-                &rpath,
-                app,
-                task_id,
-                cancel,
-                transferred,
-                total,
+                sftp, &entry.path(), &rpath, app, task_id, cancel, pause, transferred, total, overwrite,
             ))
             .await?;
         }
         return Ok(());
     }
 
+    // 覆盖决策（叶子文件）；None 表示 Skip 跳过
+    let Some(target) = resolve_upload_target(sftp, remote, local, overwrite).await? else {
+        return Ok(());
+    };
     let name = local
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -341,21 +473,11 @@ async fn upload_recursive(
         .await
         .map_err(|e| e.to_string())?;
     let mut remote_f = sftp
-        .open_with_flags(
-            remote,
-            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
-        )
+        .open_with_flags(&target, OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE)
         .await
         .map_err(|e| e.to_string())?;
     stream_with_progress(
-        app,
-        task_id,
-        cancel,
-        transferred,
-        total,
-        &name,
-        &mut local_f,
-        &mut remote_f,
+        app, task_id, cancel, pause, transferred, total, &name, &mut local_f, &mut remote_f,
     )
     .await?;
     remote_f.flush().await.map_err(|e| e.to_string())?;
@@ -370,11 +492,16 @@ async fn download_recursive(
     app: &AppHandle,
     task_id: &str,
     cancel: &AtomicBool,
+    pause: &AtomicBool,
     transferred: &AtomicU64,
     total: u64,
+    overwrite: OverwriteMode,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
+    }
+    if pause.load(Ordering::Relaxed) {
+        return Err("paused".into());
     }
     let meta = sftp.metadata(remote).await.map_err(|e| e.to_string())?;
     if meta.is_dir() {
@@ -386,6 +513,9 @@ async fn download_recursive(
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
+            if pause.load(Ordering::Relaxed) {
+                return Err("paused".into());
+            }
             let name = entry.file_name();
             if name == "." || name == ".." {
                 continue;
@@ -396,37 +526,27 @@ async fn download_recursive(
             let rpath = join_remote(remote, &name);
             let lpath = local.join(&name);
             Box::pin(download_recursive(
-                sftp,
-                &rpath,
-                &lpath,
-                app,
-                task_id,
-                cancel,
-                transferred,
-                total,
+                sftp, &rpath, &lpath, app, task_id, cancel, pause, transferred, total, overwrite,
             ))
             .await?;
         }
         return Ok(());
     }
 
+    // 覆盖决策（本地叶子文件）；None 表示 Skip 跳过
+    let Some(target) = resolve_download_target(local, remote, sftp, overwrite).await? else {
+        return Ok(());
+    };
     let name = local
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
     let mut remote_f = sftp.open(remote).await.map_err(|e| e.to_string())?;
-    let mut local_f = tokio::fs::File::create(local)
+    let mut local_f = tokio::fs::File::create(&target)
         .await
         .map_err(|e| e.to_string())?;
     stream_with_progress(
-        app,
-        task_id,
-        cancel,
-        transferred,
-        total,
-        &name,
-        &mut remote_f,
-        &mut local_f,
+        app, task_id, cancel, pause, transferred, total, &name, &mut remote_f, &mut local_f,
     )
     .await?;
     local_f.flush().await.map_err(|e| e.to_string())?;
@@ -444,12 +564,13 @@ fn join_remote(dir: &str, name: &str) -> String {
     }
 }
 
-/// 通用流式拷贝 + 进度事件（每 64KB 一片），循环前检查取消标志。
+/// 通用流式拷贝 + 进度事件。循环前检查 cancel/pause；进度 emit 时间节流（≥100ms）。
 #[allow(clippy::too_many_arguments)]
 async fn stream_with_progress(
     app: &AppHandle,
     task_id: &str,
     cancel: &AtomicBool,
+    pause: &AtomicBool,
     transferred: &AtomicU64,
     total: u64,
     name: &str,
@@ -457,9 +578,14 @@ async fn stream_with_progress(
     dst: &mut (impl AsyncWrite + Unpin),
 ) -> Result<(), String> {
     let mut buf = vec![0u8; 65536];
+    let mut last_emit = std::time::Instant::now();
+    const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
+        }
+        if pause.load(Ordering::Relaxed) {
+            return Err("paused".into());
         }
         let n = src.read(&mut buf).await.map_err(|e| e.to_string())?;
         if n == 0 {
@@ -468,15 +594,89 @@ async fn stream_with_progress(
         dst.write_all(&buf[..n]).await.map_err(|e| e.to_string())?;
         transferred.fetch_add(n as u64, Ordering::Relaxed);
         let done = transferred.load(Ordering::Relaxed);
-        let _ = app.emit(
-            "transfer://progress",
-            TransferProgress {
-                task_id: task_id.to_string(),
-                name: name.to_string(),
-                transferred: done,
-                total,
-            },
-        );
+        if last_emit.elapsed() >= MIN_INTERVAL {
+            emit_progress(app, task_id, name, done, total);
+            last_emit = std::time::Instant::now();
+        }
     }
+    // 收尾强制 emit 一次，保证前端终态对齐
+    emit_progress(app, task_id, name, transferred.load(Ordering::Relaxed), total);
     Ok(())
+}
+
+fn emit_progress(app: &AppHandle, task_id: &str, name: &str, transferred: u64, total: u64) {
+    let _ = app.emit(
+        "transfer://progress",
+        TransferProgress {
+            task_id: task_id.to_string(),
+            name: name.to_string(),
+            transferred,
+            total,
+        },
+    );
+}
+
+/// 上传覆盖决策：返回最终远端目标路径；None 表示跳过。
+/// Rename 暂按 Overwrite 处理（自动改名见后续）。
+async fn resolve_upload_target(
+    sftp: &SftpSession,
+    remote: &str,
+    local: &Path,
+    mode: OverwriteMode,
+) -> Result<Option<String>, String> {
+    if sftp.metadata(remote).await.is_err() {
+        return Ok(Some(remote.to_string()));
+    }
+    Ok(match mode {
+        OverwriteMode::Skip => None,
+        OverwriteMode::Overwrite | OverwriteMode::Rename => Some(remote.to_string()),
+        OverwriteMode::IfNewer => {
+            let local_mt = tokio::fs::metadata(local)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok());
+            let remote_mt = sftp
+                .metadata(remote)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok());
+            match (local_mt, remote_mt) {
+                (Some(l), Some(r)) if l > r => Some(remote.to_string()),
+                _ => None,
+            }
+        }
+    })
+}
+
+/// 下载覆盖决策：返回最终本地目标路径；None 表示跳过。
+async fn resolve_download_target(
+    local: &Path,
+    remote: &str,
+    sftp: &SftpSession,
+    mode: OverwriteMode,
+) -> Result<Option<String>, String> {
+    if !local.exists() {
+        return Ok(Some(local.to_string_lossy().into_owned()));
+    }
+    Ok(match mode {
+        OverwriteMode::Skip => None,
+        OverwriteMode::Overwrite | OverwriteMode::Rename => {
+            Some(local.to_string_lossy().into_owned())
+        }
+        OverwriteMode::IfNewer => {
+            let local_mt = tokio::fs::metadata(local)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok());
+            let remote_mt = sftp
+                .metadata(remote)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok());
+            match (local_mt, remote_mt) {
+                (Some(l), Some(r)) if r > l => Some(local.to_string_lossy().into_owned()),
+                _ => None,
+            }
+        }
+    })
 }

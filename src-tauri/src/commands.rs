@@ -388,8 +388,16 @@ pub async fn transfer_enqueue(
     kind: String,
     local_path: String,
     remote_path: String,
+    overwrite: Option<String>,
+    max_retries: Option<u32>,
 ) -> Result<String, String> {
     let kind = TransferKind::from_str(&kind)?;
+    let overwrite = overwrite
+        .as_deref()
+        .map(crate::session::transfer::OverwriteMode::from_str)
+        .transpose()?
+        .unwrap_or_default();
+    let max_retries = max_retries.unwrap_or(3);
     let local_path = std::path::PathBuf::from(local_path);
     let name = local_path
         .file_name()
@@ -402,7 +410,7 @@ pub async fn transfer_enqueue(
         })
         .unwrap_or_else(|| "transfer".to_string());
     Ok(queue
-        .enqueue(session_id, kind, local_path, remote_path, name)
+        .enqueue(session_id, kind, local_path, remote_path, name, overwrite, max_retries)
         .await)
 }
 
@@ -422,6 +430,44 @@ pub async fn transfer_list(
     queue: tauri::State<'_, TransferQueue>,
 ) -> Result<Vec<crate::session::transfer::TransferTaskSnap>, String> {
     Ok(queue.list().await)
+}
+
+/// 暂停一个传输任务。
+#[tauri::command]
+pub async fn transfer_pause(
+    queue: tauri::State<'_, TransferQueue>,
+    id: String,
+) -> Result<(), String> {
+    queue.pause(&id).await;
+    Ok(())
+}
+
+/// 继续一个暂停的传输任务。
+#[tauri::command]
+pub async fn transfer_resume(
+    queue: tauri::State<'_, TransferQueue>,
+    id: String,
+) -> Result<(), String> {
+    queue.resume(&id).await;
+    Ok(())
+}
+
+/// 重试一个已结束的传输任务（从头重传；断点续传见后续）。
+#[tauri::command]
+pub async fn transfer_retry(
+    queue: tauri::State<'_, TransferQueue>,
+    id: String,
+) -> Result<(), String> {
+    queue.retry(&id).await;
+    Ok(())
+}
+
+/// 清除所有已结束的传输任务。
+#[tauri::command]
+pub async fn transfer_clear_done(
+    queue: tauri::State<'_, TransferQueue>,
+) -> Result<usize, String> {
+    Ok(queue.clear_done().await)
 }
 
 /// 目录同步：比对本地与远程目录，将差异文件入传输队列。

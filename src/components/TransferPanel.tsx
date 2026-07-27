@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, ChevronUp, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Pause, Play, RotateCw, Trash2, X } from "lucide-react";
 import type { TransferKind, TransferStatus, TransferTask } from "../types";
 
 /**
@@ -60,6 +60,36 @@ export function TransferPanel() {
       /* ignore */
     }
   }
+  async function pause(id: string) {
+    try {
+      await invoke("transfer_pause", { id });
+    } catch {
+      /* ignore */
+    }
+  }
+  async function resume(id: string) {
+    try {
+      await invoke("transfer_resume", { id });
+    } catch {
+      /* ignore */
+    }
+  }
+  async function retry(id: string) {
+    try {
+      await invoke("transfer_retry", { id });
+    } catch {
+      /* ignore */
+    }
+  }
+  async function clearDone() {
+    try {
+      await invoke("transfer_clear_done");
+      // 后端清理后，下一次 state 事件/轮询会同步；主动刷新一次
+      invoke<TransferTask[]>("transfer_list").then(setTasks).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  }
 
   // 无任务且未展开：不显示入口，避免常驻按钮
   if (tasks.length === 0 && !open) return null;
@@ -74,6 +104,9 @@ export function TransferPanel() {
         <div className="transfer-panel">
           <div className="transfer-head">
             <span>传输队列（{tasks.length}）</span>
+            <button className="icon-btn" title="清空已完成" onClick={() => clearDone()}>
+              <Trash2 size={14} />
+            </button>
             <button className="icon-btn" onClick={() => setOpen(false)}>
               <X size={14} />
             </button>
@@ -83,7 +116,10 @@ export function TransferPanel() {
               <div className="transfer-empty">暂无传输任务</div>
             ) : (
               tasks.map((t) => {
-                const live = t.status === "queued" || t.status === "running";
+                const live =
+                  t.status === "queued" ||
+                  t.status === "running" ||
+                  t.status === "paused";
                 return (
                   <div key={t.id} className="transfer-row">
                     <div className="transfer-info">
@@ -102,6 +138,24 @@ export function TransferPanel() {
                         <div className="bar">
                           <div style={{ width: `${pct(t)}%` }} />
                         </div>
+                        {(t.status === "queued" || t.status === "running") && (
+                          <button
+                            className="icon-btn"
+                            title="暂停"
+                            onClick={() => pause(t.id)}
+                          >
+                            <Pause size={13} />
+                          </button>
+                        )}
+                        {t.status === "paused" && (
+                          <button
+                            className="icon-btn"
+                            title="继续"
+                            onClick={() => resume(t.id)}
+                          >
+                            <Play size={13} />
+                          </button>
+                        )}
                         <button
                           className="icon-btn danger"
                           title="取消"
@@ -110,10 +164,19 @@ export function TransferPanel() {
                           <X size={13} />
                         </button>
                       </>
-                    ) : t.status === "failed" ? (
-                      <span className="transfer-error" title={t.error || ""}>
-                        {t.error}
-                      </span>
+                    ) : t.status === "failed" || t.status === "cancelled" ? (
+                      <>
+                        <span className="transfer-error" title={t.error || ""}>
+                          {t.status === "failed" ? t.error : "已取消"}
+                        </span>
+                        <button
+                          className="icon-btn"
+                          title="重试"
+                          onClick={() => retry(t.id)}
+                        >
+                          <RotateCw size={13} />
+                        </button>
+                      </>
                     ) : null}
                   </div>
                 );
@@ -157,6 +220,7 @@ function statusLabel(s: TransferStatus): string {
     {
       queued: "排队",
       running: "进行中",
+      paused: "已暂停",
       done: "完成",
       failed: "失败",
       cancelled: "已取消",

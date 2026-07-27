@@ -116,6 +116,8 @@ pub async fn run_directory_sync(
                 local_path,
                 remote_path,
                 name,
+                super::transfer::OverwriteMode::IfNewer,
+                3,
             )
             .await;
         task_ids.push(id);
@@ -135,6 +137,8 @@ pub async fn run_directory_sync(
                 local_path,
                 remote_path,
                 name,
+                super::transfer::OverwriteMode::IfNewer,
+                3,
             )
             .await;
         task_ids.push(id);
