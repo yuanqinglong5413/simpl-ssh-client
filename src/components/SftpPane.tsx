@@ -1,5 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   ArrowLeft,
   ArrowRight,
@@ -104,6 +105,30 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
     loadLocal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  // 拖拽上传：从 OS 拖文件到本面板 → 上传到当前远程目录
+  // 注：多 SFTP Tab 时所有已挂载面板都会响应（已知限制；单 Tab 场景正常）
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    const webview = getCurrentWebview();
+    webview
+      .onDragDropEvent((e) => {
+        if (e.payload.type === "drop") {
+          for (const p of e.payload.paths) {
+            const name = p.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+            invoke("transfer_enqueue", {
+              sessionId,
+              kind: "upload",
+              localPath: p,
+              remotePath: join(name),
+            }).catch((err) => setError(String(err)));
+          }
+        }
+      })
+      .then((fn) => (un = fn));
+    return () => un?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, cwd]);
 
   const sep = localCwd.includes("\\") ? "\\" : "/";
   const join = (name: string) => (cwd === "/" ? `/${name}` : `${cwd}/${name}`);
