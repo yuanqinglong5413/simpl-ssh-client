@@ -2187,6 +2187,29 @@ input {
   display: flex;
   gap: 4px;
 }
+.git-commit-box {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+.git-commit-box textarea {
+  flex: 1;
+  min-height: 36px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  resize: vertical;
+}
+.git-stage-btn {
+  opacity: 0.55;
+}
+.git-stage-btn:hover {
+  opacity: 1;
+}
 .git-error {
   padding: 6px 14px;
   background: var(--red-soft);

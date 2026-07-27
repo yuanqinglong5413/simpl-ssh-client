@@ -67,7 +67,7 @@ pub(crate) async fn exec_git(
     repo_path: &str,
     git_args: &str,
 ) -> Result<String, String> {
-    let cmd = format!("cd {} && git {}", shellescape(repo_path), git_args);
+    let cmd = format!("cd {} && GIT_TERMINAL_PROMPT=0 git {}", shellescape(repo_path), git_args);
     exec_on_session(handle, &cmd).await
 }
 

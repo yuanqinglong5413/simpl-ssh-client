@@ -6,6 +6,8 @@ import {
   RefreshCw,
   Loader2,
   FolderTree,
+  Upload,
+  Download,
 } from "lucide-react";
 import type {
   GitStatusResult,
@@ -13,6 +15,7 @@ import type {
   GitBranch as GitBranchType,
   GitWorktree,
   GitDiffResult,
+  GitFileStatus,
 } from "../types";
 import { GitDiffView } from "./GitDiffView";
 
@@ -37,6 +40,7 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [commitMsg, setCommitMsg] = useState("");
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -137,6 +141,52 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
     }
   }
 
+  async function toggleStage(f: GitFileStatus) {
+    setError("");
+    try {
+      if (f.staged) {
+        await invoke("git_unstage", { sessionId, repoPath, path: f.path });
+      } else {
+        await invoke("git_add", { sessionId, repoPath, path: f.path });
+      }
+      await fetchStatus();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function doCommit() {
+    if (!commitMsg.trim()) return;
+    setError("");
+    try {
+      await invoke("git_commit", { sessionId, repoPath, message: commitMsg });
+      setCommitMsg("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function doPush() {
+    setError("");
+    try {
+      await invoke("git_push", { sessionId, repoPath });
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function doPull() {
+    setError("");
+    try {
+      await invoke("git_pull", { sessionId, repoPath });
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   if (loading && !status) {
     return (
       <div className="git-panel">
@@ -161,6 +211,12 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
           )}
         </div>
         <div className="git-actions">
+          <button className="icon-btn" title="pull --ff-only" onClick={doPull}>
+            <Download size={14} />
+          </button>
+          <button className="icon-btn" title="push" onClick={doPush}>
+            <Upload size={14} />
+          </button>
           <button className="icon-btn" title="刷新" onClick={refresh}>
             <RefreshCw size={14} />
           </button>
@@ -229,6 +285,16 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
                   </span>
                   <span className="git-file-path">{f.path}</span>
                   {f.staged && <span className="git-staged-tag">staged</span>}
+                  <button
+                    className="icon-btn git-stage-btn"
+                    title={f.staged ? "取消暂存" : "暂存"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleStage(f);
+                    }}
+                  >
+                    {f.staged ? "−" : "+"}
+                  </button>
                 </div>
               ))
             )}
@@ -240,6 +306,23 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
               <GitDiffView diffs={diffs} />
             </div>
           )}
+
+          <div className="git-commit-box">
+            <textarea
+              value={commitMsg}
+              onChange={(e) => setCommitMsg(e.target.value)}
+              placeholder="提交信息（commit message）"
+              rows={2}
+              spellCheck={false}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={doCommit}
+              disabled={!commitMsg.trim()}
+            >
+              提交
+            </button>
+          </div>
         </div>
       )}
 

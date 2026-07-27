@@ -1078,6 +1078,95 @@ pub async fn git_status(
     Ok(parse_status(&output))
 }
 
+/// git add（暂存指定路径；无路径则 add -A 全部暂存）。
+#[tauri::command]
+pub async fn git_add(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    path: Option<String>,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let arg = match path {
+        Some(p) => format!("add -- {}", git_ops::shellescape(&p)),
+        None => "add -A".to_string(),
+    };
+    exec_git(&entry.handle, &repo_path, &arg).await.map(|_| ())
+}
+
+/// git reset HEAD（取消暂存）。
+#[tauri::command]
+pub async fn git_unstage(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    path: Option<String>,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let arg = match path {
+        Some(p) => format!("reset HEAD -- {}", git_ops::shellescape(&p)),
+        None => "reset HEAD".to_string(),
+    };
+    exec_git(&entry.handle, &repo_path, &arg).await.map(|_| ())
+}
+
+/// git commit -m。
+#[tauri::command]
+pub async fn git_commit(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+    message: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    exec_git(
+        &entry.handle,
+        &repo_path,
+        &format!("commit -m {}", git_ops::shellescape(&message)),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// git push。
+#[tauri::command]
+pub async fn git_push(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    exec_git(&entry.handle, &repo_path, "push").await.map(|_| ())
+}
+
+/// git pull --ff-only。
+#[tauri::command]
+pub async fn git_pull(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    repo_path: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    exec_git(&entry.handle, &repo_path, "pull --ff-only")
+        .await
+        .map(|_| ())
+}
+
 /// 获取 git log。
 #[tauri::command]
 pub async fn git_log(
