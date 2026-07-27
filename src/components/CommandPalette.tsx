@@ -341,3 +341,18 @@ export function tabCommands(
     action: () => onSwitch(t.id),
   }));
 }
+
+/** 将常用命令片段转为命令列表（点击注入当前活动终端） */
+export function snippetCommands(
+  snippets: { id: string; title: string; content: string }[],
+  onInsert: (body: string) => void
+): CommandItem[] {
+  return snippets.map((s) => ({
+    id: `snippet:${s.id}`,
+    label: `片段: ${s.title}`,
+    description: s.content.slice(0, 60),
+    icon: Terminal,
+    category: "action" as const,
+    action: () => onInsert(s.content),
+  }));
+}

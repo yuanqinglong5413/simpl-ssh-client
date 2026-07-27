@@ -1,4 +1,4 @@
-import { Folder, Activity, Settings, X, GitBranch, Radio } from "lucide-react";
+import { Folder, Activity, Settings, X, GitBranch, Radio, TerminalSquare } from "lucide-react";
 import type { SessionInfo } from "../types";
 import { ThemePicker } from "./ThemePicker";
 
@@ -13,6 +13,7 @@ type Props = {
   onOpenCommandPalette?: () => void;
   broadcastEnabled: boolean;
   onToggleBroadcast: () => void;
+  onOpenSnippets: () => void;
 };
 
 export function StatusBar({
@@ -26,6 +27,7 @@ export function StatusBar({
   onOpenCommandPalette,
   broadcastEnabled,
   onToggleBroadcast,
+  onOpenSnippets,
 }: Props) {
   return (
     <div className="statusbar">
@@ -80,6 +82,13 @@ export function StatusBar({
           title="多会话广播输入（开关）：开启后输入同步到所有已打开终端"
         >
           <Radio size={13} /> 广播
+        </button>
+        <button
+          className="status-action"
+          onClick={onOpenSnippets}
+          title="常用命令片段（管理 / ⌘K 搜「片段:」注入终端）"
+        >
+          <TerminalSquare size={13} /> 片段
         </button>
         <button
           className="status-action"

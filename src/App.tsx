@@ -22,11 +22,13 @@ import { TransferPanel } from "./components/TransferPanel";
 import { ForwardPanel } from "./components/ForwardPanel";
 import { HostKeyDialog } from "./components/HostKeyDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { SnippetManager } from "./components/SnippetManager";
 import {
   CommandPalette,
   builtinCommands,
   profileCommands,
   tabCommands,
+  snippetCommands,
   type CommandItem,
 } from "./components/CommandPalette";
 import { useAppShortcuts } from "./hooks/useAppShortcuts";
@@ -40,6 +42,7 @@ import type {
   Project,
   ProfileGroup,
   SessionInfo,
+  Snippet,
   SplitNode,
   Tab,
 } from "./types";
@@ -86,6 +89,11 @@ function App() {
     }),
     [broadcastEnabled]
   );
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [showSnippets, setShowSnippets] = useState(false);
+  useEffect(() => {
+    invoke<Snippet[]>("snippet_list").then(setSnippets).catch(() => {});
+  }, []);
   const [showConnect, setShowConnect] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -590,10 +598,23 @@ function App() {
     ? sessions.find((s) => s.id === activeTab.sessionId) ?? null
     : null;
 
+  /** 注入命令到当前活动终端（命令片段用），复用广播 peers 的 WS */
+  const injectSnippet = useCallback(
+    (text: string) => {
+      if (!activeSession) return;
+      const ws = broadcastPeers.current.get(activeSession.id);
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(text));
+      }
+    },
+    [activeSession]
+  );
+
   // 命令面板数据源
   const paletteCommands: CommandItem[] = [
     ...profileCommands(profiles, connectProfile),
     ...tabCommands(tabs, setActiveTabId),
+    ...snippetCommands(snippets, injectSnippet),
     ...builtinCommands({
       onNewConnection: () => setShowConnect(true),
       onCloseTab: () => activeTabId && closeTab(activeTabId),
@@ -733,6 +754,7 @@ function App() {
           onOpenCommandPalette={() => setShowCommandPalette((v) => !v)}
           broadcastEnabled={broadcastEnabled}
           onToggleBroadcast={() => setBroadcastEnabled((b) => !b)}
+          onOpenSnippets={() => setShowSnippets(true)}
         />
       </div>
 
@@ -757,6 +779,15 @@ function App() {
         open={showSettings}
         onClose={() => setShowSettings(false)}
       />
+
+      {showSnippets && (
+        <SnippetManager
+          onClose={() => setShowSnippets(false)}
+          onChanged={() => {
+            invoke<Snippet[]>("snippet_list").then(setSnippets).catch(() => {});
+          }}
+        />
+      )}
 
       {connecting && (
         <div className="connecting">
