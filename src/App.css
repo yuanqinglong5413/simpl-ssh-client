@@ -535,6 +535,11 @@ input {
   background: var(--panel-3);
   color: var(--text);
 }
+.status-action.active {
+  background: rgba(255, 167, 38, 0.15);
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .status-action.danger:hover {
   background: var(--red-soft);
   color: var(--red);

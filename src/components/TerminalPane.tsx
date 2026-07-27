@@ -7,6 +7,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { invoke } from "@tauri-apps/api/core";
 import { useTheme } from "../theme/ThemeProvider";
 import { installTerminalActions } from "../utils/terminalActions";
+import { useBroadcast } from "../broadcast";
 import { useSettings } from "../settings/SettingsProvider";
 import { createLogHighlighter } from "../utils/logHighlight";
 import { TerminalSearchBar } from "./TerminalSearchBar";
@@ -40,6 +41,9 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
   // settings 也用 ref，保持 useEffect 依赖最小化
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const broadcast = useBroadcast();
+  const broadcastRef = useRef(broadcast);
+  broadcastRef.current = broadcast;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -114,9 +118,19 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
     });
 
     const onDataDisp = term.onData((data) => {
+      const bytes = encoder.encode(data);
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(encoder.encode(data));
+        ws.send(bytes);
+      }
+      // 多会话广播：输入 fan-out 到所有其他已打开终端
+      const bc = broadcastRef.current;
+      if (bc?.enabled) {
+        for (const [sid, p] of bc.peers) {
+          if (sid !== sessionId && p !== ws && p.readyState === WebSocket.OPEN) {
+            p.send(bytes);
+          }
+        }
       }
     });
 
@@ -145,6 +159,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
           setReady(true);
           term.focus();
           fitAndResize();
+          broadcastRef.current?.register(sessionId, ws);
         };
         ws.onmessage = (e) => {
           const raw =
@@ -156,6 +171,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
         };
         ws.onclose = () => {
           if (!disposed) connLostRef.current?.(sessionId);
+          broadcastRef.current?.unregister(sessionId);
         };
       })
       .catch((e) => {

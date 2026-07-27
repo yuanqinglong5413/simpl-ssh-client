@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { BroadcastContext } from "./broadcast";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { sendNotification } from "@tauri-apps/plugin-notification";
@@ -72,6 +73,19 @@ function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [broadcastEnabled, setBroadcastEnabled] = useState(false);
+  const broadcastPeers = useRef(new Map<string, WebSocket>());
+  const broadcast = useMemo(
+    () => ({
+      enabled: broadcastEnabled,
+      peers: broadcastPeers.current,
+      register: (id: string, ws: WebSocket) => broadcastPeers.current.set(id, ws),
+      unregister: (id: string) => {
+        broadcastPeers.current.delete(id);
+      },
+    }),
+    [broadcastEnabled]
+  );
   const [showConnect, setShowConnect] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -602,6 +616,7 @@ function App() {
   ];
 
   return (
+    <BroadcastContext.Provider value={broadcast}>
     <div className="app">
       {mode === "ssh" ? (
         <Sidebar
@@ -716,6 +731,8 @@ function App() {
           onDisconnect={() => activeSession && disconnect(activeSession.id)}
           onOpenSettings={() => setShowSettings(true)}
           onOpenCommandPalette={() => setShowCommandPalette((v) => !v)}
+          broadcastEnabled={broadcastEnabled}
+          onToggleBroadcast={() => setBroadcastEnabled((b) => !b)}
         />
       </div>
 
@@ -779,6 +796,7 @@ function App() {
         commands={paletteCommands}
       />
     </div>
+    </BroadcastContext.Provider>
   );
 }
 

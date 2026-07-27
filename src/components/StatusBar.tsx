@@ -1,4 +1,4 @@
-import { Folder, Activity, Settings, X, GitBranch } from "lucide-react";
+import { Folder, Activity, Settings, X, GitBranch, Radio } from "lucide-react";
 import type { SessionInfo } from "../types";
 import { ThemePicker } from "./ThemePicker";
 
@@ -11,6 +11,8 @@ type Props = {
   onDisconnect: () => void;
   onOpenSettings: () => void;
   onOpenCommandPalette?: () => void;
+  broadcastEnabled: boolean;
+  onToggleBroadcast: () => void;
 };
 
 export function StatusBar({
@@ -22,6 +24,8 @@ export function StatusBar({
   onDisconnect,
   onOpenSettings,
   onOpenCommandPalette,
+  broadcastEnabled,
+  onToggleBroadcast,
 }: Props) {
   return (
     <div className="statusbar">
@@ -70,6 +74,13 @@ export function StatusBar({
             <span className="status-sep" />
           </>
         )}
+        <button
+          className={`status-action ${broadcastEnabled ? "active" : ""}`}
+          onClick={onToggleBroadcast}
+          title="多会话广播输入（开关）：开启后输入同步到所有已打开终端"
+        >
+          <Radio size={13} /> 广播
+        </button>
         <button
           className="status-action"
           onClick={onOpenSettings}
