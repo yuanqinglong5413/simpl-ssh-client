@@ -2115,6 +2115,22 @@ input {
   resize: none;
   tab-size: 4;
 }
+.editor-host {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg);
+}
+.editor-host .cm-editor {
+  height: 100%;
+  font-size: 13px;
+}
+.editor-host .cm-editor.cm-focused {
+  outline: none;
+}
+.editor-host .cm-scroller {
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
 .editor-empty {
   display: flex;
   flex-direction: column;

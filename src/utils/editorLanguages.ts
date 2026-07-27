@@ -1,3 +1,18 @@
+import { javascript } from "@codemirror/lang-javascript";
+import { json } from "@codemirror/lang-json";
+import { markdown } from "@codemirror/lang-markdown";
+import { python } from "@codemirror/lang-python";
+import { rust } from "@codemirror/lang-rust";
+import { go } from "@codemirror/lang-go";
+import { html } from "@codemirror/lang-html";
+import { css } from "@codemirror/lang-css";
+import { sql } from "@codemirror/lang-sql";
+import { yaml } from "@codemirror/lang-yaml";
+import { StreamLanguage } from "@codemirror/language";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
+import type { Extension } from "@codemirror/state";
+
 /**
  * 文件扩展名到语言标识的映射表。
  * 用于编辑器自动检测语法高亮语言。
@@ -135,4 +150,42 @@ export function languageLabel(lang: string): string {
     text: "Plain Text",
   };
   return labels[lang] ?? lang;
+}
+
+/**
+ * 语言标识 → CodeMirror 6 语言扩展。未知语言返回空（纯文本）。
+ */
+export function cmExtension(lang: string): Extension[] {
+  switch (lang) {
+    case "javascript":
+      return [javascript({ jsx: true })];
+    case "typescript":
+      return [javascript({ jsx: true, typescript: true })];
+    case "json":
+      return [json()];
+    case "markdown":
+      return [markdown()];
+    case "python":
+      return [python()];
+    case "rust":
+      return [rust()];
+    case "go":
+      return [go()];
+    case "html":
+    case "vue":
+    case "svelte":
+      return [html()];
+    case "css":
+      return [css()];
+    case "sql":
+      return [sql()];
+    case "yaml":
+      return [yaml()];
+    case "shell":
+      return [StreamLanguage.define(shell)];
+    case "dockerfile":
+      return [StreamLanguage.define(dockerFile)];
+    default:
+      return [];
+  }
 }
