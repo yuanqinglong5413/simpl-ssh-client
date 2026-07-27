@@ -43,7 +43,7 @@ pub fn run() {
             app.manage(std::sync::Arc::new(session::LocalPtyRegistry::default()));
             // 启动 SFTP 传输队列的串行 worker
             app.state::<session::TransferQueue>()
-                .start_worker(app.handle().clone());
+                .start_worker_pool(app.handle().clone(), 2);
             // 系统托盘：显示主窗口 / 退出；双击托盘图标显示窗口。
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let quit = tauri::menu::MenuItem::with_id(app, "quit", "退出 Simpl SSH", true, None::<&str>)?;
@@ -104,6 +104,7 @@ pub fn run() {
             commands::transfer_resume,
             commands::transfer_retry,
             commands::transfer_clear_done,
+            commands::transfer_set_concurrency,
             commands::sync_directory,
             commands::forward_add,
             commands::forward_list,

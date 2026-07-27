@@ -470,6 +470,16 @@ pub async fn transfer_clear_done(
     Ok(queue.clear_done().await)
 }
 
+/// 设置传输并发数（1..=8），返回实际生效值。
+#[tauri::command]
+pub async fn transfer_set_concurrency(
+    app: AppHandle,
+    queue: tauri::State<'_, TransferQueue>,
+    n: usize,
+) -> Result<usize, String> {
+    Ok(queue.set_concurrency(&app, n))
+}
+
 /// 目录同步：比对本地与远程目录，将差异文件入传输队列。
 #[tauri::command]
 pub async fn sync_directory(

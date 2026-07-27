@@ -13,6 +13,7 @@ export function TransferPanel() {
   const [open, setOpen] = useState(false);
   const [tasks, setTasks] = useState<TransferTask[]>([]);
   const [speedMap, setSpeedMap] = useState<Record<string, number>>({});
+  const [concurrency, setConcurrency] = useState(2);
   const speedRef = useRef<
     Record<string, { last_t: number; last_bytes: number; ema: number }>
   >({});
@@ -113,6 +114,15 @@ export function TransferPanel() {
       /* ignore */
     }
   }
+  async function setConc(n: number) {
+    const v = Math.max(1, Math.min(8, n));
+    try {
+      const actual = await invoke<number>("transfer_set_concurrency", { n: v });
+      setConcurrency(actual);
+    } catch {
+      /* ignore */
+    }
+  }
 
   // 无任务且未展开：不显示入口，避免常驻按钮
   if (tasks.length === 0 && !open) return null;
@@ -127,6 +137,16 @@ export function TransferPanel() {
         <div className="transfer-panel">
           <div className="transfer-head">
             <span>传输队列（{tasks.length}）</span>
+            <label className="transfer-concurrency" title="并发传输数（1-8）">
+              并发
+              <input
+                type="number"
+                min={1}
+                max={8}
+                value={concurrency}
+                onChange={(e) => setConc(Number(e.target.value) || 1)}
+              />
+            </label>
             <button className="icon-btn" title="清空已完成" onClick={() => clearDone()}>
               <Trash2 size={14} />
             </button>

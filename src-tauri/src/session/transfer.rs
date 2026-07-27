@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use russh_sftp::client::SftpSession;
@@ -168,6 +168,8 @@ impl TransferTask {
 pub struct TransferQueue {
     tasks: Arc<Mutex<VecDeque<Arc<TransferTask>>>>,
     notify: Arc<Notify>,
+    desired_concurrency: Arc<AtomicUsize>,
+    active_workers: Arc<AtomicUsize>,
 }
 
 impl TransferQueue {
@@ -302,35 +304,65 @@ impl TransferQueue {
             .collect()
     }
 
-    /// 启动 worker（lib.rs setup 调一次）。单 worker 串行。
-    pub fn start_worker(&self, app: AppHandle) {
+    /// 启动 worker 池（lib.rs setup 调一次）。默认并发 2，可用 set_concurrency 调整。
+    pub fn start_worker_pool(&self, app: AppHandle, initial: usize) {
+        self.desired_concurrency.store(initial, Ordering::Relaxed);
+        for _ in 0..initial {
+            self.spawn_one(app.clone());
+        }
+    }
+
+    fn spawn_one(&self, app: AppHandle) {
         let tasks = self.tasks.clone();
         let notify = self.notify.clone();
+        let desired = self.desired_concurrency.clone();
+        let active = self.active_workers.clone();
+        active.fetch_add(1, Ordering::Relaxed);
         tauri::async_runtime::spawn(async move {
             loop {
-                notify.notified().await;
-                loop {
-                    // 原子领取：find(Queued) + set(Running) 在同一锁闭包，杜绝多 worker 重复领取
-                    let task = {
-                        let guard = tasks.lock().await;
-                        let mut found = None;
-                        for t in guard.iter() {
-                            let mut s = t.status.lock().unwrap();
-                            if matches!(*s, TransferStatus::Queued) {
-                                *s = TransferStatus::Running;
-                                found = Some(t.clone());
-                                break;
-                            }
-                        }
-                        found
-                    };
-                    let Some(task) = task else { break };
-                    let _ = app.emit("transfer://state", task.snapshot());
-                    execute(&app, &task).await;
-                    let _ = app.emit("transfer://state", task.snapshot());
+                // 收敛：超出 desired 的 worker 在当前任务结束后自行退出（不打断在跑任务）
+                if active.load(Ordering::Relaxed) > desired.load(Ordering::Relaxed) {
+                    active.fetch_sub(1, Ordering::Relaxed);
+                    return;
                 }
+                // 原子领取：find(Queued) + set(Running) 在同一锁闭包，杜绝多 worker 重复领取
+                let task = {
+                    let guard = tasks.lock().await;
+                    let mut found = None;
+                    for t in guard.iter() {
+                        let mut s = t.status.lock().unwrap();
+                        if matches!(*s, TransferStatus::Queued) {
+                            *s = TransferStatus::Running;
+                            found = Some(t.clone());
+                            break;
+                        }
+                    }
+                    found
+                };
+                let Some(task) = task else {
+                    notify.notified().await;
+                    continue;
+                };
+                let _ = app.emit("transfer://state", task.snapshot());
+                execute(&app, &task).await;
+                let _ = app.emit("transfer://state", task.snapshot());
             }
         });
+    }
+
+    /// 调整并发数（1..=8）。扩容立即补 spawn；缩容让多余 worker 在当前任务结束后退出。
+    pub fn set_concurrency(&self, app: &AppHandle, n: usize) -> usize {
+        const MAX_CONCURRENCY: usize = 8;
+        let n = n.clamp(1, MAX_CONCURRENCY);
+        let prev = self.desired_concurrency.swap(n, Ordering::Relaxed);
+        if n > prev {
+            for _ in prev..n {
+                self.spawn_one(app.clone());
+            }
+        } else if n < prev {
+            self.notify.notify_waiters();
+        }
+        n
     }
 }
 
