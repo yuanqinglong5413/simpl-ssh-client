@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Folder, Activity, Settings, X, GitBranch, Radio, TerminalSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SessionInfo } from "../types";
@@ -31,6 +32,11 @@ export function StatusBar({
   onOpenSnippets,
 }: Props) {
   const { t } = useTranslation();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const iv = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(iv);
+  }, []);
   return (
     <div className="statusbar">
       <div className="status-left">
@@ -39,6 +45,7 @@ export function StatusBar({
           <span>
             {t("status.connected")} · {session.user}@{session.host}:{session.port}
             {session.jump_via ? `（经 ${session.jump_via}）` : ""}
+            {` · ${formatElapsed(now - Date.parse(session.created_at))}`}
           </span>
         ) : (
           <span>
@@ -118,4 +125,14 @@ export function StatusBar({
       </div>
     </div>
   );
+}
+
+function formatElapsed(ms: number): string {
+  if (!isFinite(ms) || ms < 0) return "";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60}m`;
 }

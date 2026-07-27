@@ -43,6 +43,7 @@ import type {
   ProfileGroup,
   SessionInfo,
   Snippet,
+  SplitDir,
   SplitNode,
   Tab,
 } from "./types";
@@ -610,6 +611,17 @@ function App() {
     [activeSession]
   );
 
+  /** 命令面板分屏：在当前活动 tab 的最深左叶处分屏。 */
+  const onSplit = (dir: SplitDir) => {
+    if (!activeTab) return;
+    const base: SplitNode = activeTab.layout ?? {
+      kind: "leaf",
+      paneId: activeTab.id,
+      sessionId: activeTab.sessionId,
+    };
+    updateTabLayout(activeTab.id, splitFirstLeaf(base, dir));
+  };
+
   // 命令面板数据源
   const paletteCommands: CommandItem[] = [
     ...profileCommands(profiles, connectProfile),
@@ -623,10 +635,8 @@ function App() {
       onOpenMonitor: () => activeSession && openMonitor(activeSession),
       onOpenGit: () => activeSession && openGit(activeSession.id, "."),
       onDisconnect: () => activeSession && disconnect(activeSession.id),
-      onSplitHorizontal: () => {
-        /* 分屏操作通过当前 active tab 的 layout 实现，暂由 SplitView 内部按钮触发 */
-      },
-      onSplitVertical: () => {},
+      onSplitHorizontal: () => onSplit("horizontal"),
+      onSplitVertical: () => onSplit("vertical"),
       onSwitchMode: (m) => setMode(m),
       onOpenProjectTerminal: (pid) => {
         const p = projects.find((p) => p.id === pid);
@@ -829,6 +839,25 @@ function App() {
     </div>
     </BroadcastContext.Provider>
   );
+}
+
+/** 在 layout 的最深左叶处分屏（命令面板 split 用）。 */
+function splitFirstLeaf(node: SplitNode, dir: SplitDir): SplitNode {
+  if (node.kind === "leaf") {
+    return {
+      kind: "split",
+      dir,
+      ratio: 0.5,
+      children: [
+        node,
+        { kind: "leaf", paneId: crypto.randomUUID(), sessionId: node.sessionId },
+      ],
+    };
+  }
+  return {
+    ...node,
+    children: [splitFirstLeaf(node.children[0], dir), node.children[1]],
+  };
 }
 
 export default App;
