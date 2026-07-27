@@ -27,6 +27,12 @@ export type ConnectionProfile = {
   group_id?: string | null;
   /** 跳板机：引用另一个已保存连接的 id */
   jump_profile_id?: string | null;
+  /** 远程终端编码（utf-8/gbk/gb2312/big5）；默认 utf-8 */
+  encoding?: string | null;
+  /** SSH keepalive 心跳间隔（秒）；0/缺省用默认 30 */
+  keepalive_interval?: number | null;
+  /** 连接就绪后注入终端的启动命令 */
+  startup_command?: string | null;
 };
 
 /** 分屏方向：horizontal=左右切，vertical=上下切。 */
@@ -47,6 +53,26 @@ export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git" | "loca
 
 /** Tab 数据来源：ssh = 远程会话，local = 本地项目 */
 export type TabSource = "ssh" | "local";
+
+/** known_hosts 条目（已知主机管理面板） */
+export type KnownHostEntry = {
+  host: string;
+  port: number;
+  algorithm: string;
+  fingerprint: string;
+  line: number;
+  hashed: boolean;
+};
+
+/** 常用命令片段 */
+export type Snippet = {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  created_at: string;
+  group_id?: string | null;
+};
 
 export type Tab = {
   id: string;

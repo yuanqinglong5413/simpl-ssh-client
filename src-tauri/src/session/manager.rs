@@ -59,6 +59,10 @@ pub struct SessionEntry {
     jump_handle: Option<Arc<client::Handle<ClientHandler>>>,
     /// X11 转发 DISPLAY（与 ClientHandler 共享）。
     pub x11_display: Arc<Mutex<Option<String>>>,
+    /// 远程终端编码（None/utf-8 直通）；terminal_open 据此解码服务器输出。
+    pub encoding: Option<String>,
+    /// 连接就绪后注入终端的启动命令。
+    pub startup_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +105,7 @@ impl SessionManager {
                 connect_id,
                 verifier,
                 x11_display.clone(),
+                p.keepalive_interval,
             )
             .await?
         } else {
@@ -117,6 +122,7 @@ impl SessionManager {
                 verifier,
                 forward_registry.clone(),
                 x11_display.clone(),
+                p.keepalive_interval,
             )
             .await?;
             (Arc::new(handle), forward_registry, None)
@@ -139,12 +145,15 @@ impl SessionManager {
             forward_registry,
             jump_handle,
             x11_display,
+            encoding: p.encoding.clone(),
+            startup_command: p.startup_command.clone(),
         });
         self.sessions.lock().await.insert(id, entry);
         Ok(info)
     }
 
     /// 经跳板机 ProxyJump：先连跳板 → direct-tcpip 隧道 → 在隧道上 SSH 到目标。
+    #[allow(clippy::too_many_arguments)]
     async fn connect_via_jump(
         &self,
         target: &SshConnectParams,
@@ -153,6 +162,7 @@ impl SessionManager {
         connect_id: &str,
         verifier: &HostKeyVerifier,
         x11_display: Arc<Mutex<Option<String>>>,
+        keepalive_interval: Option<u64>,
     ) -> anyhow::Result<(
         Arc<client::Handle<ClientHandler>>,
         ForwardRegistry,
@@ -177,6 +187,7 @@ impl SessionManager {
             verifier,
             jump_registry,
             x11_display.clone(),
+            keepalive_interval,
         )
         .await?;
         let jump_arc = Arc::new(jump_handle);
@@ -210,6 +221,7 @@ impl SessionManager {
             verifier,
             forward_registry.clone(),
             x11_display,
+            keepalive_interval,
         )
         .await?;
 
@@ -285,9 +297,19 @@ async fn ssh_over_stream(
     verifier: &HostKeyVerifier,
     forward_registry: ForwardRegistry,
     x11_display: Arc<Mutex<Option<String>>>,
+    keepalive_interval: Option<u64>,
 ) -> anyhow::Result<client::Handle<ClientHandler>> {
     emit_progress(app, connect_id, "handshake", "协商加密通道");
-    let config = Arc::new(client::Config::default());
+    let config = {
+        let mut c = client::Config::default();
+        // keepalive：按 profile 指定间隔发 SSH 全局请求，连续 keepalive_max 次无响应才断，
+        // 避免长空闲被中间 NAT/防火墙踢掉。None/0 时用 russh 默认（不发）。
+        if let Some(secs) = keepalive_interval.filter(|&s| s > 0) {
+            c.keepalive_interval = Some(Duration::from_secs(secs));
+            c.keepalive_max = 3;
+        }
+        Arc::new(c)
+    };
     let handler = ClientHandler::for_session(
         host.to_string(),
         port,

@@ -7,9 +7,11 @@
 //! - `socks`    SOCKS5 握手（-D 用）。
 
 pub mod auth;
+pub mod encoding;
 pub mod forward;
 pub mod git_ops;
 pub mod groups;
+pub mod import;
 pub mod known_hosts;
 pub mod local_pty;
 pub mod manager;
@@ -19,6 +21,7 @@ pub mod project;
 pub mod pty;
 pub mod secrets;
 pub mod sftp;
+pub mod snippets;
 pub mod socks;
 pub mod ssh;
 pub mod sync;
@@ -36,6 +39,7 @@ pub use monitor::{MonitorSnapshot, MonitorStore};
 pub use profile::AuthMethod;
 pub use profile::ProfileStore;
 pub use project::{Project, ProjectInput, ProjectStore};
+pub use snippets::SnippetStore;
 pub use pty::TerminalBridge;
 pub use sftp::SftpManager;
 pub use ssh::connect_and_exec;

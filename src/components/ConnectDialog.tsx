@@ -54,6 +54,11 @@ export function ConnectDialog({
   const [jumpProfileId, setJumpProfileId] = useState(
     editProfile?.jump_profile_id ?? ""
   );
+  const [encoding, setEncoding] = useState(editProfile?.encoding ?? "utf-8");
+  const [keepalive, setKeepalive] = useState(editProfile?.keepalive_interval ?? 30);
+  const [startupCommand, setStartupCommand] = useState(
+    editProfile?.startup_command ?? ""
+  );
   const [save, setSave] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -135,6 +140,9 @@ export function ConnectDialog({
       passphrase: passphrase || null,
       groupId: groupId || null,
       jumpProfileId: jumpProfileId || null,
+      encoding: encoding || null,
+      keepaliveInterval: keepalive ? Number(keepalive) : null,
+      startupCommand: startupCommand.trim() || null,
     };
     if (isEdit && editProfile) {
       await invoke("profile_update", { id: editProfile.id, ...payload });
@@ -187,6 +195,9 @@ export function ConnectDialog({
         privateKeyPath: authMethod === "private_key" ? privateKeyPath : null,
         passphrase: authMethod === "private_key" ? passphrase || null : null,
         jumpProfileId: jumpProfileId || null,
+        encoding: encoding || null,
+        keepaliveInterval: keepalive ? Number(keepalive) : null,
+        startupCommand: startupCommand.trim() || null,
       });
       if (save) await saveProfileOnly();
       onConnected?.(s);
@@ -400,6 +411,38 @@ export function ConnectDialog({
                   </select>
                 </div>
               )}
+
+              <div className="row-2">
+                <div className="field">
+                  <label>远程编码</label>
+                  <select value={encoding} onChange={(e) => setEncoding(e.target.value)}>
+                    <option value="utf-8">UTF-8（默认）</option>
+                    <option value="gbk">GBK（中文 Windows）</option>
+                    <option value="gb2312">GB2312</option>
+                    <option value="big5">Big5（繁體）</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>心跳间隔(秒)</label>
+                  <input
+                    type="number"
+                    value={keepalive}
+                    onChange={(e) => setKeepalive(Number(e.target.value) || 0)}
+                    min={0}
+                    max={600}
+                    placeholder="30"
+                  />
+                </div>
+              </div>
+
+              <div className="field">
+                <label>启动命令（可选，连上后自动执行）</label>
+                <input
+                  value={startupCommand}
+                  onChange={(e) => setStartupCommand(e.target.value)}
+                  placeholder="例：cd /var/log && tail -f syslog"
+                />
+              </div>
 
               {!isEdit && (
                 <label className="check">

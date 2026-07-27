@@ -8,6 +8,9 @@
     "opener:default",
     "dialog:default",
     "process:default",
-    "updater:default"
+    "updater:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
+    "notification:default"
   ]
 }

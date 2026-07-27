@@ -13,6 +13,8 @@ export type AppSettings = {
   cursorStyle: CursorStyle;
   /** 光标闪烁 */
   cursorBlink: boolean;
+  /** 终端回滚缓冲行数 */
+  scrollback: number;
   /** 断线后自动重连 */
   autoReconnect: boolean;
   /** 最大重连次数 */
@@ -31,6 +33,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lineHeight: 1.3,
   cursorStyle: "bar",
   cursorBlink: true,
+  scrollback: 10000,
   autoReconnect: true,
   maxReconnectAttempts: 5,
   enableX11: false,

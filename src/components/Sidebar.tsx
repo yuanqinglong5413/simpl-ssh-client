@@ -8,6 +8,7 @@ import {
   Server,
   Terminal,
   Trash2,
+  Upload,
 } from "lucide-react";
 import type { ConnectionProfile, ProfileGroup } from "../types";
 
@@ -21,6 +22,7 @@ type Props = {
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
   onNew: () => void;
+  onImportSshConfig: () => void;
 };
 
 /** 侧栏连接库：按分组树形展示，支持折叠/新建分组。 */
@@ -34,6 +36,7 @@ export function Sidebar({
   onRenameGroup,
   onDeleteGroup,
   onNew,
+  onImportSshConfig,
 }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -124,6 +127,13 @@ export function Sidebar({
           <span className="sidebar-label">
             已保存的连接 ({profiles.length})
           </span>
+          <button
+            className="sidebar-icon-btn"
+            title="从 ~/.ssh/config 导入"
+            onClick={onImportSshConfig}
+          >
+            <Upload size={14} />
+          </button>
           <button
             className="sidebar-icon-btn"
             title="新建分组"

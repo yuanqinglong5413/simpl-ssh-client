@@ -194,3 +194,60 @@ fn rewrite_without_lines(path: &Path, drop_lines: &HashSet<usize>) -> Result<(),
 fn home_known_hosts_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".ssh").join("known_hosts"))
 }
+
+/// `known_hosts` 中的一个条目（用于管理面板列出）。
+#[derive(Debug, Clone, Serialize)]
+pub struct KnownHostEntry {
+    /// 主机字段原文（`host` / `host:port` / `[host]:port` / 哈希 `|1|...`）。
+    pub host: String,
+    pub port: u16,
+    pub algorithm: String,
+    pub fingerprint: String,
+    pub line: usize,
+    pub hashed: bool,
+}
+
+/// 列出 `~/.ssh/known_hosts` 全部可解析条目（管理面板用）。
+pub fn list_all() -> Result<Vec<KnownHostEntry>, String> {
+    let path = home_known_hosts_path().ok_or_else(|| "无法定位 ~/.ssh/known_hosts".to_string())?;
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut entries = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let (Some(host_field), Some(_alg), Some(keydata)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let Ok(key) = keys::parse_public_key_base64(keydata) else {
+            continue;
+        };
+        entries.push(KnownHostEntry {
+            host: host_field.to_string(),
+            port: parse_port(host_field),
+            algorithm: key.algorithm().to_string(),
+            fingerprint: key.fingerprint(russh::keys::HashAlg::Sha256).to_string(),
+            line: i + 1,
+            hashed: host_field.starts_with("|1|"),
+        });
+    }
+    Ok(entries)
+}
+
+/// 从 known_hosts 主机字段解析端口（`host:port` / `[host]:port` → port；否则 22）。
+fn parse_port(host_field: &str) -> u16 {
+    if let Some(rest) = host_field.strip_prefix('[') {
+        if let Some(idx) = rest.find("]:") {
+            return rest[idx + 2..].parse().unwrap_or(22);
+        }
+    } else if let Some(idx) = host_field.rfind(':') {
+        if let Ok(p) = host_field[idx + 1..].parse() {
+            return p;
+        }
+    }
+    22
+}

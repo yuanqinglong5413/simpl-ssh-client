@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { Terminal as TerminalIcon } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -116,6 +118,30 @@ function App() {
       setProfiles(await invoke<ConnectionProfile[]>("profile_list"));
     } catch (e) {
       showToast(String(e));
+    }
+  };
+
+  /** 从 ~/.ssh/config 批量导入连接配置。 */
+  const importSshConfig = async () => {
+    try {
+      const n = await invoke<number>("profiles_import_ssh_config");
+      await refreshProfiles();
+      showToast(
+        n > 0 ? `已从 ~/.ssh/config 导入 ${n} 条连接` : "~/.ssh/config 中无可导入的主机"
+      );
+    } catch (e) {
+      showToast(String(e));
+    }
+  };
+
+  /** 窗口隐藏（最小化到托盘）时发 OS 通知，避免与应用内 toast 重复打扰。 */
+  const notifyIfHidden = async (body: string) => {
+    try {
+      if (!(await getCurrentWindow().isVisible())) {
+        await sendNotification({ title: "Simpl SSH", body });
+      }
+    } catch {
+      /* 通知不可用时忽略 */
     }
   };
 
@@ -386,6 +412,7 @@ function App() {
         reconnectingRef.current.delete(oldSessionId);
         sessionProfileRef.current.delete(oldSessionId);
         showToast(`「${label}」重连失败，已达最大次数 (${max})`, "error");
+        void notifyIfHidden(`「${label}」重连失败，已达最大次数`);
         return;
       }
 
@@ -415,6 +442,7 @@ function App() {
         replaceSessionInTabs(oldSessionId, s.id);
         await refreshSessions();
         showToast(`「${label}」已重新连接`, "info");
+        void notifyIfHidden(`「${label}」已重新连接`);
       } catch {
         if (hostKeyRef.current) {
           reconnectingRef.current.delete(oldSessionId);
@@ -586,6 +614,7 @@ function App() {
           onRenameGroup={renameGroup}
           onDeleteGroup={deleteGroup}
           onNew={() => setShowConnect(true)}
+          onImportSshConfig={importSshConfig}
         />
       ) : (
         <ProjectSidebar

@@ -42,6 +42,9 @@ pub struct ProfileInput {
     pub passphrase: Option<String>,
     pub group_id: Option<String>,
     pub jump_profile_id: Option<String>,
+    pub encoding: Option<String>,
+    pub keepalive_interval: Option<u64>,
+    pub startup_command: Option<String>,
 }
 
 /// 一个保存的连接配置（不含密码 / passphrase）。
@@ -62,6 +65,15 @@ pub struct ConnectionProfile {
     /// 跳板机：引用另一个已保存连接的 id（单跳 ProxyJump）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jump_profile_id: Option<String>,
+    /// 远程终端编码（如 "gbk"/"gb2312"）；None/utf-8 表示直通。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    /// SSH keepalive 心跳间隔（秒）；None 表示用全局默认。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_interval: Option<u64>,
+    /// 连接就绪后注入的启动命令（等价用户敲入）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_command: Option<String>,
 }
 
 /// 连接配置存储。作为 Tauri State 注入。
@@ -120,11 +132,43 @@ impl ProfileStore {
             private_key_path: input.private_key_path,
             group_id: input.group_id,
             jump_profile_id: input.jump_profile_id,
+            encoding: input.encoding,
+            keepalive_interval: input.keepalive_interval,
+            startup_command: input.startup_command,
         };
         let mut guard = self.profiles.lock().await;
         guard.push(profile.clone());
         self.persist(&guard)?;
         Ok(profile)
+    }
+
+    /// 批量导入配置（配置导入用）；凭据（密码/passphrase）不在此处设置，
+    /// 导入的私钥认证 profile 需用户后续补充 passphrase。
+    pub async fn import_many(&self, inputs: Vec<ProfileInput>) -> Result<usize, String> {
+        let mut guard = self.profiles.lock().await;
+        let mut count = 0;
+        for input in inputs {
+            let id = Uuid::new_v4().to_string();
+            guard.push(ConnectionProfile {
+                id,
+                name: input.name,
+                host: input.host,
+                port: input.port,
+                user: input.user,
+                auth_method: input.auth_method,
+                private_key_path: input.private_key_path,
+                group_id: input.group_id,
+                jump_profile_id: input.jump_profile_id,
+                encoding: input.encoding,
+                keepalive_interval: input.keepalive_interval,
+                startup_command: input.startup_command,
+            });
+            count += 1;
+        }
+        if count > 0 {
+            self.persist(&guard)?;
+        }
+        Ok(count)
     }
 
     /// 更新已有配置；密码 / passphrase 传空则保留钥匙串中的旧值。
@@ -192,6 +236,9 @@ impl ProfileStore {
             private_key_path: input.private_key_path,
             group_id: input.group_id,
             jump_profile_id: input.jump_profile_id,
+            encoding: input.encoding,
+            keepalive_interval: input.keepalive_interval,
+            startup_command: input.startup_command,
         };
         let updated = guard[idx].clone();
         self.persist(&guard)?;
@@ -263,6 +310,9 @@ impl ProfileStore {
             user: profile.user.clone(),
             auth,
             jump,
+            encoding: profile.encoding.clone(),
+            keepalive_interval: profile.keepalive_interval,
+            startup_command: profile.startup_command.clone(),
         })
     }
 
@@ -310,6 +360,9 @@ impl ProfileStore {
             user: jump_profile.user.clone(),
             auth,
             jump: None,
+            encoding: None,
+            keepalive_interval: None,
+            startup_command: None,
         })))
     }
 

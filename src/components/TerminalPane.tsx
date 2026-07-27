@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { invoke } from "@tauri-apps/api/core";
 import { useTheme } from "../theme/ThemeProvider";
+import { installTerminalActions } from "../utils/terminalActions";
 import { useSettings } from "../settings/SettingsProvider";
 import { createLogHighlighter } from "../utils/logHighlight";
 import { TerminalSearchBar } from "./TerminalSearchBar";
@@ -24,6 +27,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const serializeRef = useRef<SerializeAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 用 ref 存储 onConnectionLost，避免其引用变化导致 useEffect 重跑（重建终端+WS）
@@ -47,6 +51,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
       lineHeight: settings.lineHeight,
       cursorBlink: settings.cursorBlink,
       cursorStyle: settings.cursorStyle,
+      scrollback: settings.scrollback,
       theme: terminalTheme,
     });
     termRef.current = term;
@@ -59,6 +64,14 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
       term.loadAddon(new WebglAddon());
     } catch {
       /* WebGL 不可用时回退 canvas */
+    }
+    const serializeAddon = new SerializeAddon();
+    term.loadAddon(serializeAddon);
+    serializeRef.current = serializeAddon;
+    try {
+      term.loadAddon(new WebLinksAddon());
+    } catch {
+      /* WebLinks 不可用时忽略 */
     }
     fitAddon.fit();
 
@@ -89,6 +102,16 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
     let disposed = false;
     const encoder = new TextEncoder();
     const highlighter = createLogHighlighter();
+
+    // 复制 / 粘贴 / 导出日志（与本地终端共用）
+    const cleanupActions = installTerminalActions({
+      term,
+      host,
+      getWs: () => wsRef.current,
+      encode: (s) => encoder.encode(s),
+      tag: `session-${sessionId}`,
+      serialize: serializeRef.current,
+    });
 
     const onDataDisp = term.onData((data) => {
       const ws = wsRef.current;
@@ -145,6 +168,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       ro.disconnect();
       onDataDisp.dispose();
+      cleanupActions();
       host.removeEventListener("keydown", onKeyDown);
       wsRef.current?.close();
       wsRef.current = null;
@@ -164,6 +188,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
     term.options.lineHeight = settings.lineHeight;
     term.options.cursorBlink = settings.cursorBlink;
     term.options.cursorStyle = settings.cursorStyle;
+    term.options.scrollback = settings.scrollback;
     try {
       fit?.fit();
     } catch {
@@ -175,6 +200,7 @@ export function TerminalPane({ sessionId, paneId, onConnectionLost }: Props) {
     settings.fontFamily,
     settings.fontSize,
     settings.lineHeight,
+    settings.scrollback,
   ]);
 
   useEffect(() => {

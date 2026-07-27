@@ -26,6 +26,12 @@ pub struct SshConnectParams {
     pub auth: SshAuth,
     /// 跳板机连接参数（单跳 ProxyJump）；建立目标连接前需先连跳板并开 direct-tcpip。
     pub jump: Option<Box<SshConnectParams>>,
+    /// 远程终端编码（如 "gbk"/"gb2312"）；None/utf-8 表示直通不转换。
+    pub encoding: Option<String>,
+    /// SSH keepalive 心跳间隔（秒）；None 表示用默认 30s。
+    pub keepalive_interval: Option<u64>,
+    /// 连接建立、shell 就绪后注入的启动命令（等价用户敲入）。
+    pub startup_command: Option<String>,
 }
 
 impl SshConnectParams {
@@ -37,6 +43,9 @@ impl SshConnectParams {
             user,
             auth: SshAuth::Password(password),
             jump: None,
+            encoding: None,
+            keepalive_interval: None,
+            startup_command: None,
         }
     }
 }

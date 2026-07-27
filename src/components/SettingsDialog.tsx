@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
-import { RotateCcw, Settings, Download, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { RotateCcw, Settings, Download, Shield, X } from "lucide-react";
 import { FONT_OPTIONS } from "../settings/types";
 import { useSettings } from "../settings/SettingsProvider";
 import { useUpdater } from "../hooks/useUpdater";
+import { KnownHostsDialog } from "./KnownHostsDialog";
 
 type Props = {
   open: boolean;
@@ -16,6 +17,7 @@ export function SettingsDialog({ open, onClose }: Props) {
   const { settings, updateSettings, resetSettings } = useSettings();
   const { checking, message: updateMsg, checkForUpdates } = useUpdater();
   const panelRef = useRef<HTMLDivElement>(null);
+  const [hostKeysOpen, setHostKeysOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -29,7 +31,8 @@ export function SettingsDialog({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <div className="overlay settings-overlay" onClick={onClose}>
+    <>
+      <div className="overlay settings-overlay" onClick={onClose}>
       <div
         className="dialog settings-dialog"
         ref={panelRef}
@@ -118,6 +121,19 @@ export function SettingsDialog({ open, onClose }: Props) {
                 </label>
               </div>
             </div>
+            <div className="field">
+              <label>回滚缓冲 ({settings.scrollback.toLocaleString()} 行)</label>
+              <input
+                type="range"
+                min={1000}
+                max={50000}
+                step={1000}
+                value={settings.scrollback}
+                onChange={(e) =>
+                  updateSettings({ scrollback: Number(e.target.value) })
+                }
+              />
+            </div>
             <div
               className="settings-preview"
               style={{
@@ -169,6 +185,15 @@ export function SettingsDialog({ open, onClose }: Props) {
               />
               终端 X11 转发（远程 GUI 程序显示到本机，需 DISPLAY）
             </label>
+            <div className="field">
+              <button
+                type="button"
+                className="btn btn-ghost settings-update-btn"
+                onClick={() => setHostKeysOpen(true)}
+              >
+                <Shield size={14} /> 已知主机管理
+              </button>
+            </div>
           </section>
 
           <section className="settings-section">
@@ -237,5 +262,9 @@ export function SettingsDialog({ open, onClose }: Props) {
         </div>
       </div>
     </div>
+    {hostKeysOpen && (
+      <KnownHostsDialog onClose={() => setHostKeysOpen(false)} />
+    )}
+    </>
   );
 }

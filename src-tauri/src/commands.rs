@@ -58,6 +58,9 @@ pub async fn ssh_connect(
     private_key_path: Option<String>,
     passphrase: Option<String>,
     jump_profile_id: Option<String>,
+    encoding: Option<String>,
+    keepalive_interval: Option<u64>,
+    startup_command: Option<String>,
 ) -> Result<SessionInfo, String> {
     let auth = build_auth(&auth_method, password, private_key_path, passphrase)?;
     let jump = resolve_jump_profile(&profiles, jump_profile_id.as_deref(), None).await?;
@@ -67,6 +70,9 @@ pub async fn ssh_connect(
         user,
         auth,
         jump,
+        encoding,
+        keepalive_interval,
+        startup_command,
     };
     state
         .connect(&params, &app, &connect_id, verifier.inner())
@@ -138,13 +144,18 @@ pub async fn terminal_open(
                 .map_err(|e| format!("X11 转发请求失败：{e}"))?;
         }
         channel
-            .request_pty(false, "xterm", cols, rows, 0, 0, &[])
+            .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
             .await
             .map_err(|e| e.to_string())?;
         channel
             .request_shell(true)
             .await
             .map_err(|e| e.to_string())?;
+        // 启动命令：shell 就绪后注入（等价用户敲入）。
+        if let Some(cmd) = entry.startup_command.as_ref().filter(|s| !s.is_empty()) {
+            let line = format!("{cmd}\n");
+            let _ = channel.data_bytes(line.into_bytes()).await;
+        }
         channel
     };
 
@@ -160,21 +171,28 @@ pub async fn terminal_open(
         .await;
     let port = bridge.port;
 
+    let encoding = entry.encoding.clone();
     tokio::spawn(async move {
+        // 终端编解码器：按 profile.encoding 在 UTF-8 ↔ GBK 等之间转换（None 直通）。
+        let mut codec = crate::session::encoding::TerminalCodec::new(encoding.as_deref());
+        let mut decode_buf = String::with_capacity(8192);
         loop {
             tokio::select! {
                 Some(bytes) = input_rx.recv() => {
-                    if channel.data_bytes(bytes).await.is_err() { break; }
+                    let payload = codec.encode_input(&bytes);
+                    if channel.data_bytes(payload).await.is_err() { break; }
                 }
                 Some((cols, rows)) = resize_rx.recv() => {
                     if channel.window_change(cols, rows, 0, 0).await.is_err() { break; }
                 }
                 msg = channel.wait() => match msg {
                     Some(ChannelMsg::Data { ref data }) => {
-                        if output_tx.send(data.as_ref().to_vec()).await.is_err() { break; }
+                        let decoded = codec.decode_output(data.as_ref(), &mut decode_buf, false);
+                        if output_tx.send(decoded).await.is_err() { break; }
                     }
                     Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-                        if output_tx.send(data.as_ref().to_vec()).await.is_err() { break; }
+                        let decoded = codec.decode_output(data.as_ref(), &mut decode_buf, false);
+                        if output_tx.send(decoded).await.is_err() { break; }
                     }
                     Some(ChannelMsg::Eof) | None => break,
                     Some(ChannelMsg::ExitStatus { .. }) => break,
@@ -539,6 +557,9 @@ pub async fn profile_save(
     passphrase: Option<String>,
     group_id: Option<String>,
     jump_profile_id: Option<String>,
+    encoding: Option<String>,
+    keepalive_interval: Option<u64>,
+    startup_command: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -553,6 +574,9 @@ pub async fn profile_save(
             passphrase,
             group_id,
             jump_profile_id,
+            encoding,
+            keepalive_interval,
+            startup_command,
         })
         .await
 }
@@ -573,6 +597,9 @@ pub async fn profile_update(
     passphrase: Option<String>,
     group_id: Option<String>,
     jump_profile_id: Option<String>,
+    encoding: Option<String>,
+    keepalive_interval: Option<u64>,
+    startup_command: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -589,6 +616,9 @@ pub async fn profile_update(
                 passphrase,
                 group_id,
                 jump_profile_id,
+                encoding,
+                keepalive_interval,
+                startup_command,
             },
         )
         .await
@@ -613,6 +643,21 @@ pub async fn profile_delete(
 ) -> Result<(), String> {
     state.clear_jump_refs(&id).await?;
     state.delete(&id).await
+}
+
+/// 从 ~/.ssh/config 导入连接配置，返回导入条数。
+#[tauri::command]
+pub async fn profiles_import_ssh_config(
+    state: tauri::State<'_, ProfileStore>,
+) -> Result<usize, String> {
+    let path = dirs::home_dir()
+        .map(|h| h.join(".ssh").join("config"))
+        .ok_or_else(|| "无法定位 ~/.ssh/config".to_string())?;
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("读取 ~/.ssh/config 失败：{e}"))?;
+    let inputs = crate::session::import::parse_ssh_config(&content);
+    state.import_many(inputs).await
 }
 
 /// 用保存的配置直接连接（从钥匙串取密码）。
@@ -674,6 +719,44 @@ pub async fn group_delete(
 ) -> Result<(), String> {
     profiles.clear_group_refs(&id).await?;
     groups.delete(&id).await
+}
+
+// ==============================  命令片段  =================================
+
+/// 列出全部常用命令片段。
+#[tauri::command]
+pub async fn snippet_list(
+    state: tauri::State<'_, crate::session::SnippetStore>,
+) -> Result<Vec<crate::session::snippets::Snippet>, String> {
+    Ok(state.list().await)
+}
+
+/// 新建命令片段。
+#[tauri::command]
+pub async fn snippet_create(
+    state: tauri::State<'_, crate::session::SnippetStore>,
+    input: crate::session::snippets::SnippetInput,
+) -> Result<crate::session::snippets::Snippet, String> {
+    state.create(input).await
+}
+
+/// 更新命令片段。
+#[tauri::command]
+pub async fn snippet_update(
+    state: tauri::State<'_, crate::session::SnippetStore>,
+    id: String,
+    input: crate::session::snippets::SnippetInput,
+) -> Result<crate::session::snippets::Snippet, String> {
+    state.update(&id, input).await
+}
+
+/// 删除命令片段。
+#[tauri::command]
+pub async fn snippet_delete(
+    state: tauri::State<'_, crate::session::SnippetStore>,
+    id: String,
+) -> Result<(), String> {
+    state.delete(&id).await
 }
 
 // ==============================  系统监控  =================================
@@ -763,6 +846,9 @@ async fn resolve_jump_profile(
         user: jump_profile.user,
         auth,
         jump: None,
+        encoding: None,
+        keepalive_interval: None,
+        startup_command: None,
     })))
 }
 
@@ -798,6 +884,14 @@ pub async fn hostkey_remove(
     port: u16,
 ) -> Result<(), String> {
     verifier.remove_host(&host, port).await
+}
+
+/// 列出 ~/.ssh/known_hosts 全部条目（已知主机管理面板用）。
+#[tauri::command]
+pub async fn hostkey_list() -> Result<Vec<crate::session::known_hosts::KnownHostEntry>, String> {
+    tokio::task::spawn_blocking(crate::session::known_hosts::list_all)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // ==============================  工作区持久化  ================================
