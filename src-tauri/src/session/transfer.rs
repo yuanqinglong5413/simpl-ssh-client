@@ -119,6 +119,8 @@ pub struct TransferTask {
     retry_count: AtomicU32,
     max_retries: u32,
     overwrite: StdMutex<OverwriteMode>,
+    /// 断点续传起点（字节）；>0 表示从该 offset 续传（pause/retry 记录，execute 消费）。
+    resume_offset: AtomicU64,
 }
 
 #[derive(Serialize, Clone)]
@@ -200,6 +202,7 @@ impl TransferQueue {
             retry_count: AtomicU32::new(0),
             max_retries,
             overwrite: StdMutex::new(overwrite),
+            resume_offset: AtomicU64::new(0),
         });
         let id = task.id.clone();
         self.tasks.lock().await.push_back(task);
@@ -268,7 +271,8 @@ impl TransferQueue {
             if retryable {
                 t.cancel.store(false, Ordering::Relaxed);
                 t.pause.store(false, Ordering::Relaxed);
-                t.transferred.store(0, Ordering::Relaxed);
+                // 断点续传：记当前位置，重试时从该 offset 续传（而非从头）
+                t.resume_offset.store(t.transferred.load(Ordering::Relaxed), Ordering::Relaxed);
                 t.retry_count.fetch_add(1, Ordering::Relaxed);
                 *s = TransferStatus::Queued;
                 true
@@ -381,6 +385,35 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
     };
     let overwrite = *task.overwrite.lock().unwrap();
 
+    // 断点续传：单文件任务若有 resume_offset 且目标已存在部分大小一致，则从 offset 续传
+    let off = task.resume_offset.swap(0, Ordering::Relaxed);
+    let effective_off = if off > 0
+        && matches!(task.kind, TransferKind::Upload | TransferKind::Download)
+    {
+        let existing = match task.kind {
+            TransferKind::Upload => sftp
+                .metadata(&task.remote_path)
+                .await
+                .ok()
+                .map(|m| m.len()),
+            TransferKind::Download => tokio::fs::metadata(&task.local_path)
+                .await
+                .ok()
+                .map(|m| m.len()),
+            _ => None,
+        };
+        match existing {
+            Some(sz) if sz == off => off,
+            _ => {
+                // 目标不存在或大小不一致 → 从头（续传点失效）
+                task.transferred.store(0, Ordering::Relaxed);
+                0
+            }
+        }
+    } else {
+        0
+    };
+
     // 总大小：单文件可精确，目录用 0（前端显示 indeterminate）
     let total: u64 = match task.kind {
         TransferKind::Upload => tokio::fs::metadata(&task.local_path)
@@ -404,13 +437,13 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
         TransferKind::Upload | TransferKind::UploadDir => {
             upload_recursive(
                 &sftp, &task.local_path, &task.remote_path, app, &task.id,
-                &task.cancel, &task.pause, &task.transferred, total, overwrite,
+                &task.cancel, &task.pause, &task.transferred, total, overwrite, effective_off,
             ).await
         }
         TransferKind::Download => {
             download_recursive(
                 &sftp, &task.remote_path, &task.local_path, app, &task.id,
-                &task.cancel, &task.pause, &task.transferred, total, overwrite,
+                &task.cancel, &task.pause, &task.transferred, total, overwrite, effective_off,
             ).await
         }
     };
@@ -422,7 +455,8 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
             cleanup_partial(&sftp, task).await;
         }
         Err(e) if e == "paused" => {
-            // 保留半成品；批 1 resume 会从头重传（断点续传见后续）
+            // 记续传点，保留半成品；resume 时从该 offset 续传
+            task.resume_offset.store(task.transferred.load(Ordering::Relaxed), Ordering::Relaxed);
             task.set_status(TransferStatus::Paused);
         }
         Err(e) => task.set_status(TransferStatus::Failed(e)),
@@ -464,6 +498,7 @@ async fn upload_recursive(
     transferred: &AtomicU64,
     total: u64,
     overwrite: OverwriteMode,
+    effective_off: u64,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
@@ -485,8 +520,9 @@ async fn upload_recursive(
             }
             let name = entry.file_name().to_string_lossy().to_string();
             let rpath = join_remote(remote, &name);
+            // 子文件从头传（effective_off 仅顶层单文件续传用）
             Box::pin(upload_recursive(
-                sftp, &entry.path(), &rpath, app, task_id, cancel, pause, transferred, total, overwrite,
+                sftp, &entry.path(), &rpath, app, task_id, cancel, pause, transferred, total, overwrite, 0,
             ))
             .await?;
         }
@@ -504,10 +540,29 @@ async fn upload_recursive(
     let mut local_f = tokio::fs::File::open(local)
         .await
         .map_err(|e| e.to_string())?;
-    let mut remote_f = sftp
-        .open_with_flags(&target, OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE)
+    let mut remote_f = if effective_off > 0 {
+        // 断点续传：不 TRUNCATE，seek 到 offset 续写
+        use tokio::io::{AsyncSeekExt, SeekFrom};
+        let mut f = sftp
+            .open_with_flags(&target, OpenFlags::CREATE | OpenFlags::WRITE)
+            .await
+            .map_err(|e| e.to_string())?;
+        f.seek(SeekFrom::Start(effective_off))
+            .await
+            .map_err(|e| e.to_string())?;
+        local_f
+            .seek(SeekFrom::Start(effective_off))
+            .await
+            .map_err(|e| e.to_string())?;
+        f
+    } else {
+        sftp.open_with_flags(
+            &target,
+            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
+        )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+    };
     stream_with_progress(
         app, task_id, cancel, pause, transferred, total, &name, &mut local_f, &mut remote_f,
     )
@@ -528,6 +583,7 @@ async fn download_recursive(
     transferred: &AtomicU64,
     total: u64,
     overwrite: OverwriteMode,
+    effective_off: u64,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
@@ -558,7 +614,7 @@ async fn download_recursive(
             let rpath = join_remote(remote, &name);
             let lpath = local.join(&name);
             Box::pin(download_recursive(
-                sftp, &rpath, &lpath, app, task_id, cancel, pause, transferred, total, overwrite,
+                sftp, &rpath, &lpath, app, task_id, cancel, pause, transferred, total, overwrite, 0,
             ))
             .await?;
         }
@@ -574,9 +630,29 @@ async fn download_recursive(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
     let mut remote_f = sftp.open(remote).await.map_err(|e| e.to_string())?;
-    let mut local_f = tokio::fs::File::create(&target)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut local_f = if effective_off > 0 {
+        // 断点续传：不 truncate，seek 到 offset 续写
+        use tokio::io::{AsyncSeekExt, SeekFrom};
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&target)
+            .await
+            .map_err(|e| e.to_string())?;
+        f.seek(SeekFrom::Start(effective_off))
+            .await
+            .map_err(|e| e.to_string())?;
+        remote_f
+            .seek(SeekFrom::Start(effective_off))
+            .await
+            .map_err(|e| e.to_string())?;
+        f
+    } else {
+        tokio::fs::File::create(&target)
+            .await
+            .map_err(|e| e.to_string())?
+    };
     stream_with_progress(
         app, task_id, cancel, pause, transferred, total, &name, &mut remote_f, &mut local_f,
     )
