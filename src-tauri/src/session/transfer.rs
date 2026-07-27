@@ -629,7 +629,8 @@ async fn resolve_upload_target(
     }
     Ok(match mode {
         OverwriteMode::Skip => None,
-        OverwriteMode::Overwrite | OverwriteMode::Rename => Some(remote.to_string()),
+        OverwriteMode::Overwrite => Some(remote.to_string()),
+        OverwriteMode::Rename => Some(pick_rename_target(sftp, remote).await?),
         OverwriteMode::IfNewer => {
             let local_mt = tokio::fs::metadata(local)
                 .await
@@ -660,9 +661,8 @@ async fn resolve_download_target(
     }
     Ok(match mode {
         OverwriteMode::Skip => None,
-        OverwriteMode::Overwrite | OverwriteMode::Rename => {
-            Some(local.to_string_lossy().into_owned())
-        }
+        OverwriteMode::Overwrite => Some(local.to_string_lossy().into_owned()),
+        OverwriteMode::Rename => Some(pick_rename_target_local(local).await?),
         OverwriteMode::IfNewer => {
             let local_mt = tokio::fs::metadata(local)
                 .await
@@ -679,4 +679,44 @@ async fn resolve_download_target(
             }
         }
     })
+}
+
+/// 拆路径为 (去扩展名的部分, 含点扩展名)；无扩展名或隐藏文件（.bashrc）则 ext 为空。
+fn split_ext(path: &str) -> (String, String) {
+    let base_start = path.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let base = &path[base_start..];
+    match base.rsplit_once('.') {
+        Some((_, e)) if !e.is_empty() && base.len() > e.len() + 1 => {
+            (path[..path.len() - e.len() - 1].to_string(), format!(".{e}"))
+        }
+        _ => (path.to_string(), String::new()),
+    }
+}
+
+/// 远端 Rename：找 `name (N).ext` 第一个不存在的候选。
+async fn pick_rename_target(sftp: &SftpSession, remote: &str) -> Result<String, String> {
+    let (stem, ext) = split_ext(remote);
+    for i in 1..=9999u32 {
+        let cand = format!("{stem} ({i}){ext}");
+        if sftp.metadata(&cand).await.is_err() {
+            return Ok(cand);
+        }
+    }
+    Err("rename: 目标已存在太多副本".into())
+}
+
+/// 本地 Rename：找 `name (N).ext` 第一个不存在的候选。
+async fn pick_rename_target_local(local: &Path) -> Result<String, String> {
+    let s = local.to_string_lossy();
+    let (stem, ext) = split_ext(&s);
+    for i in 1..=9999u32 {
+        let cand = format!("{stem} ({i}){ext}");
+        if !tokio::fs::try_exists(std::path::Path::new(&cand))
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(cand);
+        }
+    }
+    Err("rename: 目标已存在太多副本".into())
 }

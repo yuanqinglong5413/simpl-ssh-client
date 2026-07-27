@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, ChevronUp, Pause, Play, RotateCw, Trash2, X } from "lucide-react";
@@ -12,6 +12,10 @@ import type { TransferKind, TransferStatus, TransferTask } from "../types";
 export function TransferPanel() {
   const [open, setOpen] = useState(false);
   const [tasks, setTasks] = useState<TransferTask[]>([]);
+  const [speedMap, setSpeedMap] = useState<Record<string, number>>({});
+  const speedRef = useRef<
+    Record<string, { last_t: number; last_bytes: number; ema: number }>
+  >({});
 
   useEffect(() => {
     let un1: (() => void) | undefined;
@@ -29,6 +33,25 @@ export function TransferPanel() {
     listen<{ task_id: string; transferred: number; total: number }>(
       "transfer://progress",
       (e) => {
+        // EMA 滑动窗口算速度（B/s），alpha=1-exp(-dt)
+        const now = Date.now();
+        const s = speedRef.current[e.payload.task_id] ?? {
+          last_t: now,
+          last_bytes: 0,
+          ema: 0,
+        };
+        const dt = Math.max(0.001, (now - s.last_t) / 1000);
+        const db = e.payload.transferred - s.last_bytes;
+        if (db > 0) {
+          const inst = db / dt;
+          const alpha = 1 - Math.exp(-dt);
+          s.ema = alpha * inst + (1 - alpha) * s.ema;
+        }
+        s.last_t = now;
+        s.last_bytes = e.payload.transferred;
+        speedRef.current[e.payload.task_id] = s;
+        const ema = s.ema;
+        setSpeedMap((m) => ({ ...m, [e.payload.task_id]: ema }));
         setTasks((prev) =>
           prev.map((t) =>
             t.id === e.payload.task_id
@@ -138,6 +161,17 @@ export function TransferPanel() {
                         <div className="bar">
                           <div style={{ width: `${pct(t)}%` }} />
                         </div>
+                        <span className="transfer-speed">
+                          {t.status === "running" && speedMap[t.id]
+                            ? `${fmtSpeed(speedMap[t.id])}${
+                                t.total > 0
+                                  ? ` · ${fmtEta((t.total - t.transferred) / speedMap[t.id])}`
+                                  : ""
+                              }`
+                            : pct(t) > 0
+                            ? `${pct(t)}%`
+                            : ""}
+                        </span>
                         {(t.status === "queued" || t.status === "running") && (
                           <button
                             className="icon-btn"
@@ -226,4 +260,17 @@ function statusLabel(s: TransferStatus): string {
       cancelled: "已取消",
     }[s] ?? s
   );
+}
+
+function fmtSpeed(bps: number): string {
+  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
+}
+
+function fmtEta(sec: number): string {
+  if (!isFinite(sec) || sec <= 0) return "";
+  if (sec < 60) return `${sec.toFixed(0)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m${Math.floor(sec % 60)}s`;
+  return `${Math.floor(sec / 3600)}h${Math.floor((sec % 3600) / 60)}m`;
 }

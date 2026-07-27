@@ -1196,6 +1196,14 @@ input {
   border-radius: 3px;
   overflow: hidden;
 }
+.transfer-speed {
+  flex: 0 0 130px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 .transfer-error {
   font-size: 11px;
   color: var(--red);
