@@ -2443,3 +2443,19 @@ input {
   color: var(--accent);
   flex-shrink: 0;
 }
+
+/* ========== 可访问性 ========== */
+/* 键盘焦点可见（鼠标点击不显示焦点环）；覆盖各处 outline:none */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+/* 尊重系统「减少动态」偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -13,8 +13,8 @@
 
 | 层 | 选型 | 说明 |
 |----|------|------|
-| 前端 | React 19 + TS + Tailwind + shadcn/ui | UI 层 |
-| 终端渲染 | xterm.js v5（WebGL） | vim/htop/tmux 全兼容，硬件加速 |
+| 前端 | React 19 + TS（手写 CSS 设计系统，深墨+琥珀） | UI 层 |
+| 终端渲染 | xterm.js v6（WebGL） | vim/htop/tmux 全兼容，硬件加速 |
 | 桥接 | Tauri 2 | 系统 webview，不打包 Chromium |
 | SSH 协议 | russh + russh-sftp | 纯 Rust、async；作者同时维护 Tabby |
 | 异步运行时 | tokio（full） | |

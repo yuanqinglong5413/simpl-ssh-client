@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+### 新增（体验升级 Phase 1-5）
+- **终端**：复制粘贴（Ctrl+Shift+C/V/右键）、SSH keepalive 心跳、远程 GBK 编码（encoding_rs 双向）、启动命令、scrollback 可调 + 会话日志导出、WebLinks
+- **会话管理**：常用命令片段（snippets）、known_hosts 管理面板、系统托盘（关闭到托盘）、OS 通知、`~/.ssh/config` 导入
+- **SFTP**：双面板（左本地/右远程）、传输并发池（1-8）、暂停/继续/重试、覆盖策略（Overwrite/Skip/IfNewer/Rename）、断点续传、速度/ETA、chmod/copy、tar.gz 归档、文件名筛选
+- **编辑器**：CodeMirror 6 真语法高亮（替换 textarea）
+- **Git**：add/unstage/commit/push/pull（`GIT_TERMINAL_PROMPT=0` 防交互 hang）
+- **效率**：多会话广播输入、命令片段 UI（⌘K 注入）
+
 ## [0.8.2] - 2026-06-27
 
 ### 修复
@@ -57,7 +65,7 @@
 ## [0.3.2] - 2026-06-26
 
 ### 新增
-- **主题系统（21 套）**：GUI 界面与 SSH 终端配色联动，涵盖 Dracula、Nord、Tokyo Night、
+- **主题系统（26 套）**：GUI 界面与 SSH 终端配色联动，涵盖 Dracula、Nord、Tokyo Night、
   Catppuccin、Solarized 等经典方案；状态栏「主题」按钮切换，选择持久化至 localStorage。
 - **终端完整 ANSI 16 色调色板**：`ls --color`、`grep --color` 等远端彩色输出正常显示。
 - **纯文本日志语法高亮**：`cat`/`tail` 无 ANSI 的日志按 ERROR/WARN/INFO/DEBUG 级别、
