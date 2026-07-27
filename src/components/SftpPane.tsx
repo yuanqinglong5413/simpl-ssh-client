@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Archive,
   Copy,
   File as FileIcon,
   Folder,
@@ -42,6 +43,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  const [filterText, setFilterText] = useState("");
 
   async function load(path?: string) {
     setLoading(true);
@@ -221,9 +223,34 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
     }
   }
 
+  /** 归档：选中 .tar.gz/.tgz → 解压到当前目录；否则 → 打包为 .tar.gz */
+  async function archive() {
+    if (!selected) return;
+    setBusy(true);
+    setError("");
+    try {
+      const isArchive = /\.(tar\.gz|tgz)$/.test(selected);
+      if (isArchive) {
+        await invoke("sftp_untar", { sessionId, src: join(selected), dir: cwd });
+      } else {
+        await invoke("sftp_tar", { sessionId, src: join(selected), dst: join(`${selected}.tar.gz`) });
+      }
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function onPathEnter(e: KeyboardEvent) {
     if (e.key === "Enter") load(pathInput);
   }
+
+  // 文件名筛选（本地+远程共用）
+  const filter = filterText.trim().toLowerCase();
+  const vis = (es: FileEntry[]) =>
+    filter ? es.filter((e) => e.name.toLowerCase().includes(filter)) : es;
 
   return (
     <div className="sftp">
@@ -238,6 +265,13 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
           onKeyDown={onPathEnter}
           spellCheck={false}
           placeholder="/"
+        />
+        <input
+          className="sftp-filter"
+          value={filterText}
+          onChange={(e) => setFilterText(e.target.value)}
+          placeholder="筛选…"
+          spellCheck={false}
         />
         <button className="icon-btn" title="刷新远程" onClick={() => load()}>
           <RefreshCw size={15} />
@@ -257,6 +291,14 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
         </button>
         <button className="icon-btn" title="复制" onClick={copyFile} disabled={busy || !selected}>
           <Copy size={14} />
+        </button>
+        <button
+          className="icon-btn"
+          title="归档（压缩/解压 tar.gz）"
+          onClick={archive}
+          disabled={busy || !selected}
+        >
+          <Archive size={14} />
         </button>
         <button className="icon-btn" title="目录同步" onClick={() => setShowSync(true)}>
           <FolderSync size={15} />
@@ -284,7 +326,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
           </div>
           <div className="sftp-list">
             <FileList
-              entries={localEntries}
+              entries={vis(localEntries)}
               selected={localSelected}
               onSelect={setLocalSelected}
               onEnter={localEnter}
@@ -321,7 +363,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
           </div>
           <div className="sftp-list">
             <FileList
-              entries={entries}
+              entries={vis(entries)}
               selected={selected}
               onSelect={setSelected}
               onEnter={enter}

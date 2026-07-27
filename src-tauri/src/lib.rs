@@ -95,6 +95,8 @@ pub fn run() {
             commands::sftp_remove,
             commands::sftp_chmod,
             commands::sftp_copy,
+            commands::sftp_tar,
+            commands::sftp_untar,
             commands::sftp_read_file,
             commands::sftp_write_file,
             commands::sftp_select_local_files,

@@ -303,6 +303,52 @@ pub async fn sftp_copy(
         .map(|_| ())
 }
 
+/// 远程打包（tar -czf，gzip）。
+#[tauri::command]
+pub async fn sftp_tar(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    src: String,
+    dst: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let (parent, base) = src.rsplit_once('/').unwrap_or((".", src.as_str()));
+    let cmd = format!(
+        "tar -czf {} -C {} {}",
+        crate::session::git_ops::shellescape(&dst),
+        crate::session::git_ops::shellescape(parent),
+        crate::session::git_ops::shellescape(base)
+    );
+    crate::session::git_ops::exec_on_session(&entry.handle, &cmd)
+        .await
+        .map(|_| ())
+}
+
+/// 远程解包（tar -xzf）。
+#[tauri::command]
+pub async fn sftp_untar(
+    sessions: tauri::State<'_, SessionManager>,
+    session_id: String,
+    src: String,
+    dir: String,
+) -> Result<(), String> {
+    let entry = sessions
+        .get(&session_id)
+        .await
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let cmd = format!(
+        "tar -xzf {} -C {}",
+        crate::session::git_ops::shellescape(&src),
+        crate::session::git_ops::shellescape(&dir)
+    );
+    crate::session::git_ops::exec_on_session(&entry.handle, &cmd)
+        .await
+        .map(|_| ())
+}
+
 // ----------------------------  选框（不传输）-------------------------------
 
 /// 弹本地文件选择框（可多选），返回所选文件的绝对路径列表。不执行传输。
