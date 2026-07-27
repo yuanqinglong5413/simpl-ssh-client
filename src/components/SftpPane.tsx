@@ -5,6 +5,7 @@ import {
   ArrowRight,
   ArrowUp,
   Archive,
+  Bookmark,
   Copy,
   File as FileIcon,
   Folder,
@@ -44,6 +45,23 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
   const [busy, setBusy] = useState(false);
   const [showSync, setShowSync] = useState(false);
   const [filterText, setFilterText] = useState("");
+  const [bookmarks, setBookmarks] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("sftp-bookmarks") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  function persistBookmarks(b: string[]) {
+    setBookmarks(b);
+    localStorage.setItem("sftp-bookmarks", JSON.stringify(b));
+  }
+  function addBookmark() {
+    if (cwd && !bookmarks.includes(cwd)) persistBookmarks([...bookmarks, cwd]);
+  }
+  function gotoBookmark(p: string) {
+    if (p) load(p);
+  }
 
   async function load(path?: string) {
     setLoading(true);
@@ -360,6 +378,27 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
             <span className="sftp-col-path" title={cwd}>
               远程 · {cwd}
             </span>
+            <button
+              className="icon-btn"
+              title="收藏当前远程目录"
+              onClick={addBookmark}
+              disabled={!cwd}
+            >
+              <Bookmark size={13} />
+            </button>
+            <select
+              className="sftp-bookmark-select"
+              value=""
+              onChange={(e) => gotoBookmark(e.target.value)}
+              title="书签快速跳转"
+            >
+              <option value="">书签 ({bookmarks.length})</option>
+              {bookmarks.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="sftp-list">
             <FileList
