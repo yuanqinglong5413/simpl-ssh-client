@@ -470,7 +470,13 @@ impl LspPluginManager {
 }
 
 fn official_signing_key() -> Result<VerifyingKey, String> {
-    let encoded = option_env!("SIMPL_SSH_LSP_CATALOG_PUBLIC_KEY")
+    verifying_key_from_encoded(option_env!("SIMPL_SSH_LSP_CATALOG_PUBLIC_KEY"))
+}
+
+fn verifying_key_from_encoded(encoded: Option<&str>) -> Result<VerifyingKey, String> {
+    let encoded = encoded
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or("托管 LSP 目录尚未配置可信签名公钥；系统语言服务仍可继续使用。")?;
     let raw = BASE64
         .decode(encoded)
@@ -794,6 +800,15 @@ mod tests {
         envelope.payload = BASE64.encode(&payload);
         envelope.signature = BASE64.encode(signing_key.sign(&payload).to_bytes());
         assert!(parse_signed_catalog(&serde_json::to_vec(&envelope).unwrap(), &key).is_err());
+    }
+
+    #[test]
+    fn missing_or_empty_public_key_is_reported_as_unconfigured() {
+        for value in [None, Some(""), Some("  \n\t")] {
+            assert!(verifying_key_from_encoded(value)
+                .unwrap_err()
+                .contains("尚未配置"));
+        }
     }
 
     #[test]

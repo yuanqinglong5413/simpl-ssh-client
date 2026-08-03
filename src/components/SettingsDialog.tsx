@@ -337,7 +337,7 @@ function CategorySettings(props: CategoryViewProps) {
     case "shortcuts": return <div className="preference-shortcuts">{SHORTCUT_GROUPS.map(([title, items]) => <SettingCard key={title} title={title} description="当前版本支持查看与搜索，快捷键映射不可修改。"><dl>{items.map(([label, shortcut]) => <div key={label}><dt>{label}</dt><dd><kbd>{shortcut}</kbd></dd></div>)}</dl></SettingCard>)}</div>;
     case "updates": return <>
       <SettingCard title="应用更新" description="从 GitHub Release 检查并安装新版本。"><div className="preference-inline"><Toggle checked={settings.checkUpdatesOnStart} onChange={(checked) => updateSettings({ checkUpdatesOnStart: checked })} label="启动时检查" /><button type="button" className="btn btn-ghost" disabled={props.checking} onClick={props.onCheckUpdates}><RefreshCw size={14} /> {props.checking ? "检查中…" : "立即检查"}</button></div>{props.updateMessage && <p className="preference-status">{props.updateMessage}</p>}</SettingCard>
-      <SettingCard title="关于 Simpl SSH" description="轻量级跨平台 SSH、SFTP 与远程开发工作台。"><div className="preference-about"><CircleHelp size={16} /><span>Simpl SSH v0.11.0</span></div></SettingCard>
+      <SettingCard title="关于 Simpl SSH" description="轻量级跨平台 SSH、SFTP 与远程开发工作台。"><div className="preference-about"><CircleHelp size={16} /><span>Simpl SSH v0.11.1</span></div></SettingCard>
     </>;
   }
 }
