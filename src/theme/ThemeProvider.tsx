@@ -18,6 +18,8 @@ interface ThemeContextValue {
   theme: AppTheme;
   /** 切换主题并持久化 */
   setTheme: (id: string) => void;
+  /** 恢复默认主题，并清除主题持久化项。 */
+  resetTheme: () => void;
   /** 所有可用主题列表 */
   themes: AppTheme[];
   /** xterm 终端配色（含 16 色 ANSI） */
@@ -85,15 +87,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const resetTheme = useCallback(() => {
+    setTheme(DEFAULT_THEME_ID);
+  }, [setTheme]);
+
   const value = useMemo<ThemeContextValue>(
     () => ({
       themeId,
       theme,
       setTheme,
+      resetTheme,
       themes,
       terminalTheme: theme.terminal,
     }),
-    [themeId, theme, setTheme]
+    [themeId, theme, setTheme, resetTheme]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

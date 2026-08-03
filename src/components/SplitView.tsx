@@ -12,6 +12,8 @@ type Props = {
   onCloseAll: () => void;
   /** 终端 WebSocket 断开 */
   onConnectionLost?: (sessionId: string) => void;
+  startupCommand?: string;
+  active?: boolean;
 };
 
 /**
@@ -24,12 +26,16 @@ export function SplitView({
   onChange,
   onCloseAll,
   onConnectionLost,
+  startupCommand,
+  active = true,
 }: Props) {
   return (
     <NodeView
       node={layout}
       sessionId={sessionId}
       onConnectionLost={onConnectionLost}
+      startupCommand={startupCommand}
+      active={active}
       onReplace={(n) => {
         if (n === null) onCloseAll();
         else onChange(n);
@@ -46,12 +52,19 @@ function NodeView({
   sessionId,
   onReplace,
   onConnectionLost,
+  startupCommand,
+  active,
 }: {
   node: SplitNode;
   sessionId: string;
   onReplace: Replace;
   onConnectionLost?: (sessionId: string) => void;
+  startupCommand?: string;
+  active: boolean;
 }) {
+  // 必须在所有分支前调用 Hook：叶子被替换成 split 时同一组件实例仍会保留。
+  // 将 useRef 放在条件 return 之后会触发 React 的 Hook 顺序错误。
+  const containerRef = useRef<HTMLDivElement>(null);
   if (node.kind === "leaf") {
     const split = (dir: SplitDir) =>
       onReplace({
@@ -69,6 +82,8 @@ function NodeView({
           sessionId={node.sessionId}
           paneId={node.paneId}
           onConnectionLost={onConnectionLost}
+          startupCommand={startupCommand}
+          active={active}
         />
         <div className="pane-actions">
           <button title="左右分屏" onClick={() => split("horizontal")}>
@@ -90,7 +105,6 @@ function NodeView({
   }
 
   // split 节点：把字段提为局部变量，避免闭包内对联合类型 node 的字段收窄失败
-  const containerRef = useRef<HTMLDivElement>(null);
   const dir = node.dir;
   const ratio = node.ratio;
   const children = node.children;
@@ -134,6 +148,8 @@ function NodeView({
           node={children[0]}
           sessionId={sessionId}
           onConnectionLost={onConnectionLost}
+          startupCommand={startupCommand}
+          active={active}
           onReplace={(n) => replaceChild(0, n)}
         />
       </div>
@@ -143,6 +159,8 @@ function NodeView({
           node={children[1]}
           sessionId={sessionId}
           onConnectionLost={onConnectionLost}
+          startupCommand={startupCommand}
+          active={active}
           onReplace={(n) => replaceChild(1, n)}
         />
       </div>

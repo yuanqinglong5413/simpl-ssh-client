@@ -45,6 +45,8 @@ pub struct ProfileInput {
     pub encoding: Option<String>,
     pub keepalive_interval: Option<u64>,
     pub startup_command: Option<String>,
+    /// 用户标注的运行环境，只用于界面风险提示，不参与 SSH 协议。
+    pub environment: Option<String>,
 }
 
 /// 一个保存的连接配置（不含密码 / passphrase）。
@@ -74,6 +76,9 @@ pub struct ConnectionProfile {
     /// 连接就绪后注入的启动命令（等价用户敲入）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_command: Option<String>,
+    /// 生产 / 预发 / 测试 / 本地；旧配置缺省为未标记。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 /// 连接配置存储。作为 Tauri State 注入。
@@ -135,6 +140,7 @@ impl ProfileStore {
             encoding: input.encoding,
             keepalive_interval: input.keepalive_interval,
             startup_command: input.startup_command,
+            environment: input.environment,
         };
         let mut guard = self.profiles.lock().await;
         guard.push(profile.clone());
@@ -162,6 +168,7 @@ impl ProfileStore {
                 encoding: input.encoding,
                 keepalive_interval: input.keepalive_interval,
                 startup_command: input.startup_command,
+                environment: input.environment,
             });
             count += 1;
         }
@@ -239,6 +246,7 @@ impl ProfileStore {
             encoding: input.encoding,
             keepalive_interval: input.keepalive_interval,
             startup_command: input.startup_command,
+            environment: input.environment,
         };
         let updated = guard[idx].clone();
         self.persist(&guard)?;

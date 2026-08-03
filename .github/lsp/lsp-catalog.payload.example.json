@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "id": "typescript",
+      "version": "REPLACE_WITH_RELEASE_VERSION",
+      "name": "TypeScript Language Server",
+      "publisher": "Simpl SSH Official",
+      "description": "Managed TypeScript and JavaScript language service.",
+      "languages": [{ "id": "typescript", "extensions": ["ts", "tsx", "js", "jsx"], "lspId": "typescript" }],
+      "rootMarkers": ["package.json", "tsconfig.json", ".git"],
+      "capabilities": ["diagnostics", "completion", "hover", "definition", "references", "semanticTokens"],
+      "runtimes": {}
+    },
+    {
+      "id": "pyright",
+      "version": "REPLACE_WITH_RELEASE_VERSION",
+      "name": "Pyright",
+      "publisher": "Simpl SSH Official",
+      "description": "Managed Python language service.",
+      "languages": [{ "id": "python", "extensions": ["py", "pyi"], "lspId": "python" }],
+      "rootMarkers": ["pyproject.toml", "requirements.txt", ".git"],
+      "capabilities": ["diagnostics", "completion", "hover", "definition", "references", "semanticTokens"],
+      "runtimes": {}
+    },
+    {
+      "id": "rust-analyzer",
+      "version": "REPLACE_WITH_RELEASE_VERSION",
+      "name": "rust-analyzer",
+      "publisher": "Simpl SSH Official",
+      "description": "Managed Rust language service.",
+      "languages": [{ "id": "rust", "extensions": ["rs"], "lspId": "rust" }],
+      "rootMarkers": ["Cargo.toml", ".git"],
+      "capabilities": ["diagnostics", "completion", "hover", "definition", "references", "semanticTokens"],
+      "runtimes": {}
+    },
+    {
+      "id": "gopls",
+      "version": "REPLACE_WITH_RELEASE_VERSION",
+      "name": "gopls",
+      "publisher": "Simpl SSH Official",
+      "description": "Managed Go language service.",
+      "languages": [{ "id": "go", "extensions": ["go"], "lspId": "go" }],
+      "rootMarkers": ["go.mod", "go.work", ".git"],
+      "capabilities": ["diagnostics", "completion", "hover", "definition", "references", "semanticTokens"],
+      "runtimes": {}
+    },
+    {
+      "id": "jdtls",
+      "version": "REPLACE_WITH_RELEASE_VERSION",
+      "name": "Eclipse JDT Language Server",
+      "publisher": "Simpl SSH Official",
+      "description": "Managed Java language service; its runtime package includes a matching JRE.",
+      "languages": [{ "id": "java", "extensions": ["java"], "lspId": "java" }],
+      "rootMarkers": ["pom.xml", "build.gradle", "settings.gradle", ".git"],
+      "capabilities": ["diagnostics", "completion", "hover", "definition", "references", "semanticTokens"],
+      "runtimes": {}
+    },
+    {
+      "id": "clangd",
+      "version": "REPLACE_WITH_RELEASE_VERSION",
+      "name": "clangd",
+      "publisher": "Simpl SSH Official",
+      "description": "Managed C and C++ language service.",
+      "languages": [{ "id": "cpp", "extensions": ["c", "cc", "cpp", "cxx", "h", "hpp"], "lspId": "cpp" }],
+      "rootMarkers": ["compile_commands.json", "CMakeLists.txt", ".git"],
+      "capabilities": ["diagnostics", "completion", "hover", "definition", "references", "semanticTokens"],
+      "runtimes": {}
+    }
+  ]
+}

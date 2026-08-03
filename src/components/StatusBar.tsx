@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Folder, Activity, Settings, X, GitBranch, Radio, TerminalSquare } from "lucide-react";
+import { Folder, Activity, Settings, X, GitBranch, Radio, TerminalSquare, ListTodo } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SessionInfo } from "../types";
 import { ThemePicker } from "./ThemePicker";
@@ -14,8 +14,10 @@ type Props = {
   onOpenSettings: () => void;
   onOpenCommandPalette?: () => void;
   broadcastEnabled: boolean;
+  broadcastTargetCount: number;
   onToggleBroadcast: () => void;
   onOpenSnippets: () => void;
+  onOpenTransfers: () => void;
 };
 
 export function StatusBar({
@@ -28,8 +30,10 @@ export function StatusBar({
   onOpenSettings,
   onOpenCommandPalette,
   broadcastEnabled,
+  broadcastTargetCount,
   onToggleBroadcast,
   onOpenSnippets,
+  onOpenTransfers,
 }: Props) {
   const { t } = useTranslation();
   const [now, setNow] = useState(Date.now());
@@ -92,7 +96,7 @@ export function StatusBar({
           onClick={onToggleBroadcast}
           title="多会话广播输入（开关）：开启后输入同步到所有已打开终端"
         >
-          <Radio size={13} /> {t("status.broadcast")}
+          <Radio size={13} /> {t("status.broadcast")}{broadcastEnabled ? ` (${broadcastTargetCount})` : ""}
         </button>
         <button
           className="status-action"
@@ -100,6 +104,9 @@ export function StatusBar({
           title="常用命令片段（管理 / ⌘K 搜「片段:」注入终端）"
         >
           <TerminalSquare size={13} /> {t("status.snippets")}
+        </button>
+        <button className="status-action" onClick={onOpenTransfers} title={t("status.transfers")}>
+          <ListTodo size={13} /> {t("status.transfers")}
         </button>
         <button
           className="status-action"
@@ -121,7 +128,7 @@ export function StatusBar({
             ⌘K
           </button>
         )}
-        <span>simpl-ssh v0.10.1</span>
+        <span>simpl-ssh v0.11.0</span>
       </div>
     </div>
   );

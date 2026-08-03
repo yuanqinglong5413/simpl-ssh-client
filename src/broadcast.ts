@@ -8,6 +8,8 @@ import { createContext, useContext } from "react";
  */
 export type BroadcastCtx = {
   enabled: boolean;
+  /** 明确选择的目标会话；不在集合中的会话绝不会收到输入。 */
+  targetIds: Set<string>;
   peers: Map<string, WebSocket>;
   register: (id: string, ws: WebSocket) => void;
   unregister: (id: string) => void;

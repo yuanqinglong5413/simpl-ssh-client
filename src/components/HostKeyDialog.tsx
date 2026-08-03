@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ShieldAlert, ShieldCheck, Copy, Check } from "lucide-react";
 import type { HostKeyEvent } from "../types";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type Props = {
   data: HostKeyEvent;
@@ -14,6 +15,7 @@ type Props = {
 export function HostKeyDialog({ data, busy, onTrust, onReject }: Props) {
   const [copied, setCopied] = useState(false);
   const changed = data.kind === "changed";
+  const dialogRef = useDialogFocus(true, onReject);
 
   async function copyFingerprint() {
     try {
@@ -27,9 +29,9 @@ export function HostKeyDialog({ data, busy, onTrust, onReject }: Props) {
 
   return (
     <div className="overlay hostkey-overlay">
-      <div className="dialog hostkey-dialog" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="dialog hostkey-dialog" role="alertdialog" aria-modal="true" aria-labelledby="hostkey-title" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-head">
-          <div className="dialog-title">
+          <div className="dialog-title" id="hostkey-title">
             {changed ? <ShieldAlert size={16} /> : <ShieldCheck size={16} />}
             {changed ? "主机公钥已变更" : "首次连接"}
           </div>

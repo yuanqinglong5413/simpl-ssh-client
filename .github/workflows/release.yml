@@ -140,6 +140,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # 这是公开的 Ed25519 验证公钥，不是私钥。未设置时应用安全回退到系统 LSP，
+          # 不会接受网络插件目录或下载任何托管二进制。
+          SIMPL_SSH_LSP_CATALOG_PUBLIC_KEY: ${{ vars.LSP_CATALOG_PUBLIC_KEY }}
           # Apple codesign/notarize 变量通过 job 环境隐式传递，不在此显式列出，
           # 避免空字符串触发 notarize 失败。仅当 MACOS_SIGNED=true 时
           # “Write Apple env for signed builds” step 才会将它们写入 GITHUB_ENV。

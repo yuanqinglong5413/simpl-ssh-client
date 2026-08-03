@@ -19,6 +19,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
+const UNCLAIMED_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// 前端经 WS 发来的控制消息（终端 resize 等）。
 #[derive(Debug, Deserialize)]
 struct WsControlMsg {
@@ -73,9 +75,29 @@ impl TerminalBridge {
     }
 
     /// 登记一对管道，返回一次性 token。
-    pub async fn register(&self, pipes: TerminalPipes) -> String {
+    pub async fn register(self: &Arc<Self>, pipes: TerminalPipes) -> String {
+        self.register_with_ttl(pipes, UNCLAIMED_TOKEN_TTL).await
+    }
+
+    async fn register_with_ttl(
+        self: &Arc<Self>,
+        pipes: TerminalPipes,
+        ttl: std::time::Duration,
+    ) -> String {
         let token = Uuid::new_v4().to_string();
         self.pipes.lock().await.insert(token.clone(), pipes);
+        // If the WebSocket handshake never arrives (for example a renderer
+        // crashed while opening a tab), release the pipes after a short grace
+        // period. Dropping the input sender is also the signal used by local
+        // PTY and SSH bridge tasks to terminate their child/channel.
+        let bridge = Arc::downgrade(self);
+        let token_for_cleanup = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(ttl).await;
+            if let Some(bridge) = bridge.upgrade() {
+                let _ = bridge.take(&token_for_cleanup).await;
+            }
+        });
         token
     }
 
@@ -138,5 +160,44 @@ impl TerminalBridge {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TerminalBridge, TerminalPipes};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn unclaimed_token_cleanup_drops_terminal_pipes() {
+        let bridge = Arc::new(TerminalBridge {
+            port: 0,
+            pipes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let (input_tx, mut input_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let (resize_tx, mut resize_rx) = mpsc::channel(1);
+        drop(output_tx);
+
+        let token = bridge
+            .register_with_ttl(
+                TerminalPipes {
+                    input_tx,
+                    output_rx,
+                    resize_tx,
+                },
+                std::time::Duration::ZERO,
+            )
+            .await;
+        for _ in 0..20 {
+            if !bridge.pipes.lock().await.contains_key(&token) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert!(bridge.take(&token).await.is_none());
+        assert!(input_rx.recv().await.is_none());
+        assert!(resize_rx.recv().await.is_none());
     }
 }

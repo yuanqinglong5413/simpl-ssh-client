@@ -17,13 +17,25 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target.isContentEditable;
 }
 
+/** 终端、CodeMirror 与原生输入控件优先获得按键，应用快捷键不应抢走 PTY 输入。 */
+function belongsToInteractiveSurface(event: KeyboardEvent): boolean {
+  if (isEditableTarget(event.target)) return true;
+  return event.composedPath().some((item) =>
+    item instanceof HTMLElement && (
+      item.classList.contains("terminal-host") ||
+      item.classList.contains("xterm") ||
+      item.classList.contains("cm-editor")
+    )
+  );
+}
+
 /**
  * 全局应用快捷键（终端焦点时不拦截 Ctrl+F，留给终端搜索）。
  */
 export function useAppShortcuts(handlers: ShortcutHandlers) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isEditableTarget(e.target)) return;
+      if (belongsToInteractiveSurface(e)) return;
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
 

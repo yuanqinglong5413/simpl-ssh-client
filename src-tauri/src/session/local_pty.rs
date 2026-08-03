@@ -8,7 +8,7 @@
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
@@ -18,6 +18,8 @@ use super::pty::{TerminalBridge, TerminalPipes};
 pub struct LocalPtyHandle {
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    process_id: Option<u32>,
 }
 
 /// 存储活跃的本地 PTY，用于 resize 和写入。
@@ -40,11 +42,18 @@ impl LocalPtyRegistry {
         id: String,
         master: Box<dyn portable_pty::MasterPty + Send>,
         writer: Box<dyn Write + Send>,
+        killer: Box<dyn ChildKiller + Send + Sync>,
+        process_id: Option<u32>,
     ) {
-        self.ptys
-            .lock()
-            .await
-            .insert(id, LocalPtyHandle { master, writer });
+        self.ptys.lock().await.insert(
+            id,
+            LocalPtyHandle {
+                master,
+                writer,
+                killer,
+                process_id,
+            },
+        );
     }
 
     /// 调整指定 PTY 的窗口大小。
@@ -78,6 +87,22 @@ impl LocalPtyRegistry {
     pub async fn remove(&self, id: &str) {
         self.ptys.lock().await.remove(id);
     }
+
+    /// 终止 PTY 子进程；由输入管道关闭或标签卸载触发。
+    pub async fn kill(&self, id: &str) {
+        if let Some(handle) = self.ptys.lock().await.get_mut(id) {
+            #[cfg(unix)]
+            if let Some(pid) = handle.process_id {
+                // portable-pty starts the shell with setsid(), so its PID is
+                // also the process-group ID. Signalling the group prevents an
+                // Agent or child command from surviving after the tab closes.
+                unsafe {
+                    let _ = libc::kill(-(pid as libc::pid_t), libc::SIGHUP);
+                }
+            }
+            let _ = handle.killer.kill();
+        }
+    }
 }
 
 /// 在本地打开一个终端，返回 TerminalHandle（port + token）。
@@ -104,7 +129,7 @@ pub async fn open_local_terminal(
         cmd.cwd(home);
     }
 
-    cmd.env("TERM", "xterm-256color");
+    configure_terminal_env(&mut cmd);
 
     // 创建 PTY
     let pair = pty_system
@@ -124,12 +149,20 @@ pub async fn open_local_terminal(
 
     // 获取 master、reader 和 writer
     let master = pair.master;
-    let mut reader = master
-        .try_clone_reader()
-        .map_err(|e| format!("failed to clone reader: {e}"))?;
-    let writer = master
-        .take_writer()
-        .map_err(|e| format!("failed to take writer: {e}"))?;
+    let mut reader = match master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            return Err(format!("failed to clone reader: {error}"));
+        }
+    };
+    let writer = match master.take_writer() {
+        Ok(writer) => writer,
+        Err(error) => {
+            let _ = child.kill();
+            return Err(format!("failed to take writer: {error}"));
+        }
+    };
 
     // 创建 mpsc 管道
     let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(64);
@@ -138,8 +171,12 @@ pub async fn open_local_terminal(
 
     let pty_id = uuid::Uuid::new_v4().to_string();
 
-    // 注册 PTY（用于 resize 和写入）
-    registry.register(pty_id.clone(), master, writer).await;
+    // 注册 PTY（用于 resize、写入和关闭时终止子进程）。
+    let killer = child.clone_killer();
+    let process_id = child.process_id();
+    registry
+        .register(pty_id.clone(), master, writer, killer, process_id)
+        .await;
 
     // spawn reader 线程：PTY stdout → output_tx
     let output_tx_clone = output_tx.clone();
@@ -172,6 +209,7 @@ pub async fn open_local_terminal(
                 break;
             }
         }
+        registry_for_writer.kill(&pty_id_for_writer).await;
     });
 
     // spawn resize 任务：resize_rx → PTY resize
@@ -208,6 +246,14 @@ pub async fn open_local_terminal(
     })
 }
 
+fn configure_terminal_env(cmd: &mut CommandBuilder) {
+    // 不让启动器环境中的 NO_COLOR 关闭 Claude Code、OpenCode 等 TUI 的色彩。
+    // 不设置 FORCE_COLOR，用户仍可在自己的 shell 中明确关闭颜色。
+    cmd.env_remove("NO_COLOR");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+}
+
 struct ShellInfo {
     program: String,
     arg: Option<String>,
@@ -237,5 +283,30 @@ fn detect_shell() -> ShellInfo {
             program: "/bin/bash".to_string(),
             arg: Some("-l".to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::configure_terminal_env;
+    use portable_pty::CommandBuilder;
+
+    #[test]
+    fn terminal_environment_enables_color_without_force_color() {
+        let mut command = CommandBuilder::new("sh");
+        command.env("NO_COLOR", "1");
+        configure_terminal_env(&mut command);
+        assert_eq!(command.get_env("NO_COLOR"), None);
+        assert_eq!(
+            command.get_env("TERM").and_then(|value| value.to_str()),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            command
+                .get_env("COLORTERM")
+                .and_then(|value| value.to_str()),
+            Some("truecolor")
+        );
+        assert_eq!(command.get_env("FORCE_COLOR"), None);
     }
 }

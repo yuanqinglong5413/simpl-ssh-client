@@ -4,13 +4,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AuthMethod,
+  ConnectionEnvironment,
   ConnectionProfile,
   HostKeyEvent,
   ProfileGroup,
   SessionInfo,
 } from "../types";
 import { ConnSteps } from "./ConnSteps";
+import { LoadingState } from "./LoadingState";
 import { HostKeyDialog } from "./HostKeyDialog";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type Progress = { stage: string; message: string };
 
@@ -59,7 +62,16 @@ export function ConnectDialog({
   const [startupCommand, setStartupCommand] = useState(
     editProfile?.startup_command ?? ""
   );
+  const [environment, setEnvironment] = useState<ConnectionEnvironment | "">(editProfile?.environment ?? "");
   const [save, setSave] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(
+    Boolean(
+      editProfile?.jump_profile_id ||
+        editProfile?.startup_command ||
+        (editProfile?.encoding && editProfile.encoding !== "utf-8") ||
+        (editProfile?.keepalive_interval && editProfile.keepalive_interval !== 30)
+    )
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [connectId, setConnectId] = useState<string | null>(null);
@@ -67,6 +79,10 @@ export function ConnectDialog({
   const [hostKey, setHostKey] = useState<HostKeyEvent | null>(null);
   const [hostKeyBusy, setHostKeyBusy] = useState(false);
   const hostKeyRef = useRef<HostKeyEvent | null>(null);
+  // 主机指纹确认覆盖在连接表单之上时，只有最上层对话框应保留焦点陷阱。
+  const dialogRef = useDialogFocus(!hostKey, () => {
+    if (!busy) onClose();
+  });
 
   useEffect(() => {
     if (editProfile) {
@@ -143,6 +159,7 @@ export function ConnectDialog({
       encoding: encoding || null,
       keepaliveInterval: keepalive ? Number(keepalive) : null,
       startupCommand: startupCommand.trim() || null,
+      environment: environment || null,
     };
     if (isEdit && editProfile) {
       await invoke("profile_update", { id: editProfile.id, ...payload });
@@ -252,13 +269,17 @@ export function ConnectDialog({
   return (
     <>
       <div className="overlay" onClick={busy ? undefined : onClose}>
+        <div ref={dialogRef}>
         <form
           className="dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="connect-dialog-title"
           onClick={(e) => e.stopPropagation()}
           onSubmit={submit}
         >
           <div className="dialog-head">
-            <div className="dialog-title">
+            <div className="dialog-title" id="connect-dialog-title">
               <Plug size={16} /> {isEdit ? "编辑连接" : "新建连接"}
             </div>
             <button
@@ -273,8 +294,7 @@ export function ConnectDialog({
 
           {busy && progress && !isEdit ? (
             <div className="conn-view">
-              <div className="conn-spinner" />
-              <div className="conn-msg">{progress.message}</div>
+              <LoadingState label="正在建立连接" detail={progress.message} />
               <ConnSteps stage={progress.stage} />
             </div>
           ) : (
@@ -378,6 +398,19 @@ export function ConnectDialog({
                 />
               </div>
 
+              {(isEdit || save) && (
+                <div className="field">
+                  <label>运行环境</label>
+                  <select value={environment} onChange={(e) => setEnvironment(e.target.value as ConnectionEnvironment | "")}>
+                    <option value="">未标记</option>
+                    <option value="production">生产（高风险操作会额外确认）</option>
+                    <option value="staging">预发</option>
+                    <option value="testing">测试</option>
+                    <option value="local">本地</option>
+                  </select>
+                </div>
+              )}
+
               {(isEdit || save) && groups.length > 0 && (
                 <div className="field">
                   <label>分组</label>
@@ -395,54 +428,63 @@ export function ConnectDialog({
                 </div>
               )}
 
-              {jumpCandidates.length > 0 && (
-                <div className="field">
-                  <label>跳板机（ProxyJump）</label>
-                  <select
-                    value={jumpProfileId}
-                    onChange={(e) => setJumpProfileId(e.target.value)}
-                  >
-                    <option value="">直连（不经跳板）</option>
-                    {jumpCandidates.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.user}@{p.host}:{p.port})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              <details
+                className="connect-advanced"
+                open={advancedOpen}
+                onToggle={(e) => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
+              >
+                <summary>高级连接设置</summary>
+                <div className="connect-advanced-body">
+                  {jumpCandidates.length > 0 && (
+                    <div className="field">
+                      <label>跳板机（ProxyJump）</label>
+                      <select
+                        value={jumpProfileId}
+                        onChange={(e) => setJumpProfileId(e.target.value)}
+                      >
+                        <option value="">直连（不经跳板）</option>
+                        {jumpCandidates.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} ({p.user}@{p.host}:{p.port})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
-              <div className="row-2">
-                <div className="field">
-                  <label>远程编码</label>
-                  <select value={encoding} onChange={(e) => setEncoding(e.target.value)}>
-                    <option value="utf-8">UTF-8（默认）</option>
-                    <option value="gbk">GBK（中文 Windows）</option>
-                    <option value="gb2312">GB2312</option>
-                    <option value="big5">Big5（繁體）</option>
-                  </select>
-                </div>
-                <div className="field">
-                  <label>心跳间隔(秒)</label>
-                  <input
-                    type="number"
-                    value={keepalive}
-                    onChange={(e) => setKeepalive(Number(e.target.value) || 0)}
-                    min={0}
-                    max={600}
-                    placeholder="30"
-                  />
-                </div>
-              </div>
+                  <div className="row-2">
+                    <div className="field">
+                      <label>远程编码</label>
+                      <select value={encoding} onChange={(e) => setEncoding(e.target.value)}>
+                        <option value="utf-8">UTF-8（默认）</option>
+                        <option value="gbk">GBK（中文 Windows）</option>
+                        <option value="gb2312">GB2312</option>
+                        <option value="big5">Big5（繁體）</option>
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label>心跳间隔(秒)</label>
+                      <input
+                        type="number"
+                        value={keepalive}
+                        onChange={(e) => setKeepalive(Number(e.target.value) || 0)}
+                        min={0}
+                        max={600}
+                        placeholder="30"
+                      />
+                    </div>
+                  </div>
 
-              <div className="field">
-                <label>启动命令（可选，连上后自动执行）</label>
-                <input
-                  value={startupCommand}
-                  onChange={(e) => setStartupCommand(e.target.value)}
-                  placeholder="例：cd /var/log && tail -f syslog"
-                />
-              </div>
+                  <div className="field">
+                    <label>启动命令（可选，连上后自动执行）</label>
+                    <input
+                      value={startupCommand}
+                      onChange={(e) => setStartupCommand(e.target.value)}
+                      placeholder="例：cd /var/log && tail -f syslog"
+                    />
+                  </div>
+                </div>
+              </details>
 
               {!isEdit && (
                 <label className="check">
@@ -492,6 +534,7 @@ export function ConnectDialog({
             </button>
           </div>
         </form>
+        </div>
       </div>
       {hostKey && (
         <HostKeyDialog

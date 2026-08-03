@@ -136,6 +136,8 @@ pub struct TransferTaskSnap {
     pub overwrite: String,
     pub retry_count: u32,
     pub max_retries: u32,
+    pub local_path: String,
+    pub remote_path: String,
 }
 
 impl TransferTask {
@@ -157,6 +159,8 @@ impl TransferTask {
             overwrite: self.overwrite.lock().unwrap().as_str().to_string(),
             retry_count: self.retry_count.load(Ordering::Relaxed),
             max_retries: self.max_retries,
+            local_path: self.local_path.to_string_lossy().into_owned(),
+            remote_path: self.remote_path.clone(),
         }
     }
 
@@ -266,13 +270,17 @@ impl TransferQueue {
             let mut s = t.status.lock().unwrap();
             let retryable = matches!(
                 *s,
-                TransferStatus::Failed(_) | TransferStatus::Cancelled | TransferStatus::Done | TransferStatus::Paused
+                TransferStatus::Failed(_)
+                    | TransferStatus::Cancelled
+                    | TransferStatus::Done
+                    | TransferStatus::Paused
             );
             if retryable {
                 t.cancel.store(false, Ordering::Relaxed);
                 t.pause.store(false, Ordering::Relaxed);
                 // 断点续传：记当前位置，重试时从该 offset 续传（而非从头）
-                t.resume_offset.store(t.transferred.load(Ordering::Relaxed), Ordering::Relaxed);
+                t.resume_offset
+                    .store(t.transferred.load(Ordering::Relaxed), Ordering::Relaxed);
                 t.retry_count.fetch_add(1, Ordering::Relaxed);
                 *s = TransferStatus::Queued;
                 true
@@ -391,11 +399,7 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
         && matches!(task.kind, TransferKind::Upload | TransferKind::Download)
     {
         let existing = match task.kind {
-            TransferKind::Upload => sftp
-                .metadata(&task.remote_path)
-                .await
-                .ok()
-                .map(|m| m.len()),
+            TransferKind::Upload => sftp.metadata(&task.remote_path).await.ok().map(|m| m.len()),
             TransferKind::Download => tokio::fs::metadata(&task.local_path)
                 .await
                 .ok()
@@ -436,15 +440,35 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
     let res = match task.kind {
         TransferKind::Upload | TransferKind::UploadDir => {
             upload_recursive(
-                &sftp, &task.local_path, &task.remote_path, app, &task.id,
-                &task.cancel, &task.pause, &task.transferred, total, overwrite, effective_off,
-            ).await
+                &sftp,
+                &task.local_path,
+                &task.remote_path,
+                app,
+                &task.id,
+                &task.cancel,
+                &task.pause,
+                &task.transferred,
+                total,
+                overwrite,
+                effective_off,
+            )
+            .await
         }
         TransferKind::Download => {
             download_recursive(
-                &sftp, &task.remote_path, &task.local_path, app, &task.id,
-                &task.cancel, &task.pause, &task.transferred, total, overwrite, effective_off,
-            ).await
+                &sftp,
+                &task.remote_path,
+                &task.local_path,
+                app,
+                &task.id,
+                &task.cancel,
+                &task.pause,
+                &task.transferred,
+                total,
+                overwrite,
+                effective_off,
+            )
+            .await
         }
     };
 
@@ -456,7 +480,8 @@ async fn execute(app: &AppHandle, task: &TransferTask) {
         }
         Err(e) if e == "paused" => {
             // 记续传点，保留半成品；resume 时从该 offset 续传
-            task.resume_offset.store(task.transferred.load(Ordering::Relaxed), Ordering::Relaxed);
+            task.resume_offset
+                .store(task.transferred.load(Ordering::Relaxed), Ordering::Relaxed);
             task.set_status(TransferStatus::Paused);
         }
         Err(e) => task.set_status(TransferStatus::Failed(e)),
@@ -522,7 +547,17 @@ async fn upload_recursive(
             let rpath = join_remote(remote, &name);
             // 子文件从头传（effective_off 仅顶层单文件续传用）
             Box::pin(upload_recursive(
-                sftp, &entry.path(), &rpath, app, task_id, cancel, pause, transferred, total, overwrite, 0,
+                sftp,
+                &entry.path(),
+                &rpath,
+                app,
+                task_id,
+                cancel,
+                pause,
+                transferred,
+                total,
+                overwrite,
+                0,
             ))
             .await?;
         }
@@ -564,7 +599,15 @@ async fn upload_recursive(
         .map_err(|e| e.to_string())?
     };
     stream_with_progress(
-        app, task_id, cancel, pause, transferred, total, &name, &mut local_f, &mut remote_f,
+        app,
+        task_id,
+        cancel,
+        pause,
+        transferred,
+        total,
+        &name,
+        &mut local_f,
+        &mut remote_f,
     )
     .await?;
     remote_f.flush().await.map_err(|e| e.to_string())?;
@@ -614,7 +657,17 @@ async fn download_recursive(
             let rpath = join_remote(remote, &name);
             let lpath = local.join(&name);
             Box::pin(download_recursive(
-                sftp, &rpath, &lpath, app, task_id, cancel, pause, transferred, total, overwrite, 0,
+                sftp,
+                &rpath,
+                &lpath,
+                app,
+                task_id,
+                cancel,
+                pause,
+                transferred,
+                total,
+                overwrite,
+                0,
             ))
             .await?;
         }
@@ -654,7 +707,15 @@ async fn download_recursive(
             .map_err(|e| e.to_string())?
     };
     stream_with_progress(
-        app, task_id, cancel, pause, transferred, total, &name, &mut remote_f, &mut local_f,
+        app,
+        task_id,
+        cancel,
+        pause,
+        transferred,
+        total,
+        &name,
+        &mut remote_f,
+        &mut local_f,
     )
     .await?;
     local_f.flush().await.map_err(|e| e.to_string())?;
@@ -708,7 +769,13 @@ async fn stream_with_progress(
         }
     }
     // 收尾强制 emit 一次，保证前端终态对齐
-    emit_progress(app, task_id, name, transferred.load(Ordering::Relaxed), total);
+    emit_progress(
+        app,
+        task_id,
+        name,
+        transferred.load(Ordering::Relaxed),
+        total,
+    );
     Ok(())
 }
 
@@ -794,9 +861,10 @@ fn split_ext(path: &str) -> (String, String) {
     let base_start = path.rfind('/').map(|i| i + 1).unwrap_or(0);
     let base = &path[base_start..];
     match base.rsplit_once('.') {
-        Some((_, e)) if !e.is_empty() && base.len() > e.len() + 1 => {
-            (path[..path.len() - e.len() - 1].to_string(), format!(".{e}"))
-        }
+        Some((_, e)) if !e.is_empty() && base.len() > e.len() + 1 => (
+            path[..path.len() - e.len() - 1].to_string(),
+            format!(".{e}"),
+        ),
         _ => (path.to_string(), String::new()),
     }
 }

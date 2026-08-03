@@ -3,6 +3,9 @@ import { Copy, Shield, Trash2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { KnownHostEntry } from "../types";
+import { ConfirmDialog } from "./DialogPrimitives";
+import { ErrorState, LoadingState } from "./LoadingState";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type Props = { onClose: () => void };
 
@@ -38,6 +41,8 @@ export function KnownHostsDialog({ onClose }: Props) {
   const [entries, setEntries] = useState<KnownHostEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [pendingRemoval, setPendingRemoval] = useState<{ host: string; port: number } | null>(null);
+  const dialogRef = useDialogFocus(true, onClose);
 
   async function refresh(): Promise<void> {
     setLoading(true);
@@ -53,16 +58,9 @@ export function KnownHostsDialog({ onClose }: Props) {
 
   useEffect(() => {
     void refresh();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
 
   async function remove(host: string, port: number): Promise<void> {
-    if (!window.confirm(`删除 ${host}${port === 22 ? "" : `:${port}`} 的已知主机记录？`))
-      return;
     try {
       await invoke("hostkey_remove", { host, port });
       await refresh();
@@ -73,9 +71,9 @@ export function KnownHostsDialog({ onClose }: Props) {
 
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-labelledby="known-hosts-title" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-head">
-          <div className="dialog-title">
+          <div className="dialog-title" id="known-hosts-title">
             <Shield size={16} /> 已知主机 (known_hosts)
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
@@ -84,9 +82,9 @@ export function KnownHostsDialog({ onClose }: Props) {
         </div>
         <div className="dialog-body">
           {loading ? (
-            <div className="conn-msg">加载中…</div>
+            <LoadingState compact label="正在加载已知主机…" />
           ) : error ? (
-            <div className="dialog-error">{error}</div>
+            <ErrorState label="无法读取已知主机" message={error} onRetry={() => void refresh()} />
           ) : entries.length === 0 ? (
             <div className="conn-msg">暂无已知主机记录</div>
           ) : (
@@ -112,7 +110,8 @@ export function KnownHostsDialog({ onClose }: Props) {
                     type="button"
                     className="btn btn-ghost"
                     title="删除"
-                    onClick={() => void remove(e.host, e.port)}
+                    aria-label={`删除 ${e.host} 的已知主机记录`}
+                    onClick={() => setPendingRemoval({ host: e.host, port: e.port })}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -127,6 +126,7 @@ export function KnownHostsDialog({ onClose }: Props) {
           </button>
         </div>
       </div>
+      {pendingRemoval && <ConfirmDialog title="删除已知主机记录" confirmLabel="删除记录" danger onClose={() => setPendingRemoval(null)} onConfirm={() => { const target = pendingRemoval; setPendingRemoval(null); void remove(target.host, target.port); }}><p>删除 <code>{pendingRemoval.host}{pendingRemoval.port === 22 ? "" : `:${pendingRemoval.port}`}</code> 的记录后，下次连接将再次要求核对主机指纹。</p></ConfirmDialog>}
     </div>
   );
 }

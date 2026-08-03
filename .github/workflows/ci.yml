@@ -42,14 +42,5 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build frontend (tsc + vite)
-        run: pnpm build
-
-      - name: Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-
-      - name: Clippy (deny warnings)
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-
-      - name: Tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Full quality gate
+        run: pnpm check

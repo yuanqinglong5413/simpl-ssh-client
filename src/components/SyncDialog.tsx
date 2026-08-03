@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { FolderSync, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type SyncMode = "mirror" | "upload" | "download";
 
@@ -9,25 +10,60 @@ type Props = {
   remoteDir: string;
   onClose: () => void;
   onDone?: (msg: string) => void;
+  production?: boolean;
 };
 
 /**
  * 目录同步对话框：选择本地目录与同步方向，差异文件入传输队列。
  */
-export function SyncDialog({ sessionId, remoteDir, onClose, onDone }: Props) {
+export function SyncDialog({ sessionId, remoteDir, onClose, onDone, production = false }: Props) {
   const [localDir, setLocalDir] = useState("");
   const [mode, setMode] = useState<SyncMode>("mirror");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [preview, setPreview] = useState<{ upload_count: number; download_count: number } | null>(null);
+  const [productionPhrase, setProductionPhrase] = useState("");
+  const dialogRef = useDialogFocus(true, () => {
+    if (!busy) onClose();
+  });
 
   async function pickLocal() {
     try {
       const path = await invoke<string | null>("sftp_select_folder", {
         title: "选择本地同步目录",
       });
-      if (path) setLocalDir(path);
+      if (path) {
+        setLocalDir(path);
+        resetPreview();
+      }
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  function resetPreview() {
+    setPreview(null);
+    setError("");
+  }
+
+  async function previewPlan() {
+    if (!localDir.trim()) {
+      setError("请选择本地目录");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      setPreview(await invoke<{ upload_count: number; download_count: number }>("sync_preview", {
+        sessionId,
+        localDir,
+        remoteDir,
+        mode,
+      }));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -61,9 +97,9 @@ export function SyncDialog({ sessionId, remoteDir, onClose, onDone }: Props) {
 
   return (
     <div className="overlay sync-overlay" onClick={busy ? undefined : onClose}>
-      <div className="dialog sync-dialog" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="dialog sync-dialog" role="dialog" aria-modal="true" aria-labelledby="sync-dialog-title" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-head">
-          <div className="dialog-title">
+          <div className="dialog-title" id="sync-dialog-title">
             <FolderSync size={16} /> 目录同步
           </div>
           <button type="button" onClick={onClose} disabled={busy} aria-label="关闭">
@@ -80,7 +116,10 @@ export function SyncDialog({ sessionId, remoteDir, onClose, onDone }: Props) {
             <div className="key-row">
               <input
                 value={localDir}
-                onChange={(e) => setLocalDir(e.target.value)}
+                onChange={(e) => {
+                  setLocalDir(e.target.value);
+                  resetPreview();
+                }}
                 placeholder="选择本地文件夹"
                 className="key-path"
               />
@@ -98,7 +137,10 @@ export function SyncDialog({ sessionId, remoteDir, onClose, onDone }: Props) {
             <label>同步模式</label>
             <select
               value={mode}
-              onChange={(e) => setMode(e.target.value as SyncMode)}
+              onChange={(e) => {
+                setMode(e.target.value as SyncMode);
+                resetPreview();
+              }}
               disabled={busy}
             >
               <option value="mirror">镜像（较新文件覆盖）</option>
@@ -107,16 +149,25 @@ export function SyncDialog({ sessionId, remoteDir, onClose, onDone }: Props) {
             </select>
           </div>
           <p className="sync-hint">
-            同步会扫描两侧目录树，按修改时间与大小比对差异，任务进入全局传输队列。
+            先预览差异，再确认入队。同步仅会在来源较新时覆盖同名文件。
           </p>
+          {preview && (
+            <div className="sync-preview" role="status">
+              预览完成：将上传 <strong>{preview.upload_count}</strong> 项，下载 <strong>{preview.download_count}</strong> 项。
+            </div>
+          )}
+          {production && preview && <label className="field sftp-production-confirm">将变更生产环境。输入“生产”以确认入队<input value={productionPhrase} onChange={(event) => setProductionPhrase(event.target.value)} placeholder="生产" /></label>}
         </div>
         {error && <div className="dialog-error">{error}</div>}
         <div className="dialog-foot">
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
             取消
           </button>
-          <button type="button" className="btn btn-primary" onClick={start} disabled={busy}>
-            {busy ? "扫描中…" : "开始同步"}
+          <button type="button" className="btn btn-ghost" onClick={previewPlan} disabled={busy || !localDir.trim()}>
+            {busy ? "扫描中…" : "预览差异"}
+          </button>
+          <button type="button" className="btn btn-primary" onClick={start} disabled={busy || !preview || (production && productionPhrase.trim() !== "生产")}>
+            {busy ? "同步中…" : "确认并入队"}
           </button>
         </div>
       </div>

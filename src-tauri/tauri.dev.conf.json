@@ -1,0 +1,6 @@
+{
+  "productName": "Simpl SSH Dev",
+  "identifier": "com.simplssh.client.dev",
+  "app": { "windows": [{ "title": "Simpl SSH Dev", "width": 1200, "height": 800 }] },
+  "bundle": { "active": false, "createUpdaterArtifacts": false }
+}

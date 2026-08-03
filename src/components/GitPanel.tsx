@@ -4,7 +4,6 @@ import {
   GitBranch,
   GitCommit,
   RefreshCw,
-  Loader2,
   FolderTree,
   Upload,
   Download,
@@ -18,6 +17,8 @@ import type {
   GitFileStatus,
 } from "../types";
 import { GitDiffView } from "./GitDiffView";
+import { ConfirmDialog } from "./DialogPrimitives";
+import { ErrorState, LoadingState } from "./LoadingState";
 
 type Props = {
   sessionId: string;
@@ -41,6 +42,7 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [commitMsg, setCommitMsg] = useState("");
+  const [pendingWorktreeRemoval, setPendingWorktreeRemoval] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -131,7 +133,6 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
   }
 
   async function removeWorktree(path: string) {
-    if (!window.confirm(`删除 worktree: ${path}？`)) return;
     setError("");
     try {
       await invoke("git_worktree_remove", { sessionId, repoPath, path });
@@ -190,15 +191,15 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
   if (loading && !status) {
     return (
       <div className="git-panel">
-        <div className="git-empty">
-          <Loader2 className="spin" size={20} />
-          <span>加载 Git 状态…</span>
-        </div>
+        <LoadingState label="加载 Git 状态…" />
       </div>
     );
   }
 
+  if (!status && error) return <div className="git-panel"><ErrorState label="无法读取 Git 状态" message={error} onRetry={() => void refresh()} /></div>;
+
   return (
+    <>
     <div className="git-panel">
       <div className="git-header">
         <div className="git-branch-info">
@@ -356,7 +357,8 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
                 <button
                   className="icon-btn danger"
                   title="删除"
-                  onClick={() => removeWorktree(w.path)}
+                  aria-label={`删除 worktree ${w.path}`}
+                  onClick={() => setPendingWorktreeRemoval(w.path)}
                 >
                   ×
                 </button>
@@ -366,6 +368,8 @@ export function GitPanel({ sessionId, repoPath, onOpenFile }: Props) {
         </div>
       )}
     </div>
+    {pendingWorktreeRemoval && <ConfirmDialog title="删除 Git worktree" confirmLabel="删除 worktree" danger onClose={() => setPendingWorktreeRemoval(null)} onConfirm={() => { const path = pendingWorktreeRemoval; setPendingWorktreeRemoval(null); void removeWorktree(path); }}><p>将删除远程 worktree：</p><code>{pendingWorktreeRemoval}</code><p>请确认没有未提交的修改。</p></ConfirmDialog>}
+    </>
   );
 }
 

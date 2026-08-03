@@ -9,6 +9,7 @@ export type SessionInfo = {
 };
 
 export type AuthMethod = "password" | "private_key";
+export type ConnectionEnvironment = "production" | "staging" | "testing" | "local";
 
 export type ProfileGroup = {
   id: string;
@@ -33,6 +34,8 @@ export type ConnectionProfile = {
   keepalive_interval?: number | null;
   /** 连接就绪后注入终端的启动命令 */
   startup_command?: string | null;
+  /** 仅用于界面风险语义，不改变连接协议。 */
+  environment?: ConnectionEnvironment | null;
 };
 
 /** 分屏方向：horizontal=左右切，vertical=上下切。 */
@@ -49,7 +52,7 @@ export type SplitNode =
     };
 
 /** Tab 种类 */
-export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git" | "local-terminal" | "local-editor" | "local-git";
+export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git" | "local-terminal" | "local-editor" | "local-git" | "project-workbench";
 
 /** Tab 数据来源：ssh = 远程会话，local = 本地项目 */
 export type TabSource = "ssh" | "local";
@@ -87,10 +90,21 @@ export type Tab = {
   profileId?: string;
   /** git Tab: 远程仓库路径 */
   repoPath?: string;
+  /** 项目关联的远程根目录；与 Git 仓库路径分开，避免不同项目串到同一会话标签。 */
+  remoteRoot?: string;
   /** 数据来源：ssh 或 local */
   source?: TabSource;
   /** 本地项目 ID（source=local 时使用） */
   projectId?: string;
+  /** 创建标签时冻结的本地工作目录；项目被移动/删除后也不会意外切到默认目录。 */
+  localPath?: string;
+  /** 项目工作区打开终端后注入的命令（例如进入远程根目录）。 */
+  startupCommand?: string;
+  /** 项目 Agent 标签不参与工作区自动恢复。 */
+  agentPresetId?: string;
+  agentStatus?: "running" | "exited" | "failed";
+  /** Agent 本次启动时间，仅用于项目任务状态展示；不会参与恢复。 */
+  agentStartedAt?: string;
 };
 
 export type FileEntry = {
@@ -122,6 +136,9 @@ export type TransferTask = {
   overwrite: string;
   retry_count: number;
   max_retries: number;
+  /** 仅在本机任务抽屉显示，不会上传或写入工作区快照。 */
+  local_path: string;
+  remote_path: string;
 };
 
 export type ForwardKind = "local" | "remote" | "dynamic";
@@ -181,6 +198,49 @@ export type RemoteFileContent = {
   size: number;
   modified: string | null;
   encoding: string;
+  /** 本地项目文件的乐观并发版本；远程文件不提供。 */
+  revision?: string | null;
+};
+
+export type ProjectTaskStatus = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+export type ProjectTaskRun = {
+  id: string;
+  task_id: string;
+  label: string;
+  command: string;
+  cwd: string;
+  status: ProjectTaskStatus;
+  started_at: string;
+  ended_at: string | null;
+  exit_code: number | null;
+  output: string;
+  output_truncated?: boolean;
+};
+
+export type ProjectBatchJobStatus = "queued" | "running" | "cancelling" | "succeeded" | "partial" | "failed" | "cancelled";
+export type ProjectBatchFailure = { path: string; error: string };
+export type ProjectBatchChange = { from: string; to: string | null };
+export type ProjectBatchJob = {
+  id: string;
+  operation: "copy" | "move" | "delete" | string;
+  root: string;
+  total: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+  current_path: string | null;
+  status: ProjectBatchJobStatus;
+  error: string | null;
+  failures: ProjectBatchFailure[];
+  paths: string[];
+  destination: string | null;
+  changes: ProjectBatchChange[];
+};
+
+export type ProjectDeletePreview = {
+  files: number;
+  directories: number;
+  paths: string[];
 };
 
 // =============================  Git  ================================
@@ -235,8 +295,12 @@ export type WorkspaceTab = {
   layout?: SplitNode;
   filePath?: string;
   repoPath?: string;
+  remoteRoot?: string;
   source?: TabSource;
   projectId?: string | null;
+  localPath?: string;
+  startupCommand?: string;
+  agentPresetId?: string;
 };
 
 export type WorkspaceSnapshot = {
@@ -259,6 +323,20 @@ export type Project = {
   group_id: string | null;
   created_at: string;
   linked_profiles: string[];
+  /** 项目关联的远程工作区。旧项目仅有 linked_profiles 时视为未指定远程根目录。 */
+  remote_workspaces: ProjectRemoteWorkspace[];
+  agent_bindings: ProjectAgentBinding[];
+};
+
+export type ProjectAgentBinding = {
+  preset_id: string;
+  command_override?: string;
+};
+
+export type ProjectRemoteWorkspace = {
+  profile_id: string;
+  /** 空字符串表示连接后的默认目录。 */
+  remote_path: string;
 };
 
 export type ProjectInput = {
@@ -266,4 +344,6 @@ export type ProjectInput = {
   local_path: string;
   group_id: string | null;
   linked_profiles: string[];
+  remote_workspaces: ProjectRemoteWorkspace[];
+  agent_bindings: ProjectAgentBinding[];
 };

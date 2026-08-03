@@ -1,23 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  ArrowDownToLine,
   Columns,
   FileCode,
   Folder,
   FolderTree,
+  GitPullRequestArrow,
   GitBranch,
+  LocateFixed,
+  List,
+  AlignLeft,
   LogOut,
   Monitor,
   Plus,
   Rows,
   Search,
   Settings,
+  Shield,
   SquareTerminal,
   Terminal,
+  Upload,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { fuzzyFilter } from "../utils/fuzzyMatch";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 export type CommandItem = {
   id: string;
@@ -48,6 +56,7 @@ export function CommandPalette({ open, onClose, commands }: Props) {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useDialogFocus(open, onClose);
 
   // 打开时聚焦输入框、重置查询
   useEffect(() => {
@@ -118,7 +127,7 @@ export function CommandPalette({ open, onClose, commands }: Props) {
 
   return (
     <div className="palette-overlay" onClick={onClose}>
-      <div className="palette-dialog" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="palette-dialog" role="dialog" aria-modal="true" aria-label="命令面板" onClick={(e) => e.stopPropagation()}>
         <div className="palette-input-wrap">
           <Search size={16} className="palette-search-icon" />
           <input
@@ -193,14 +202,24 @@ export function builtinCommands(handlers: {
   onOpenSftp: () => void;
   onOpenMonitor: () => void;
   onOpenGit: () => void;
+  onOpenTransfers?: () => void;
+  onOpenForwards?: () => void;
+  onImportSshConfig?: () => void;
+  onOpenSecurity?: () => void;
   onDisconnect: () => void;
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
   onSwitchMode?: (mode: "ssh" | "project") => void;
   onOpenProjectTerminal?: (projectId: string) => void;
+  onGoToDefinition?: () => void;
+  onFindReferences?: () => void;
+  onFormatDocument?: () => void;
   projects?: { id: string; name: string }[];
 }): CommandItem[] {
   const commands: CommandItem[] = [
+    ...(handlers.onGoToDefinition ? [{ id: "editor:definition", label: "编辑器：跳转到定义", description: "F12 / Cmd/Ctrl+点击", icon: LocateFixed, category: "action" as const, action: handlers.onGoToDefinition }] : []),
+    ...(handlers.onFindReferences ? [{ id: "editor:references", label: "编辑器：查找引用", description: "Shift+F12", icon: List, category: "action" as const, action: handlers.onFindReferences }] : []),
+    ...(handlers.onFormatDocument ? [{ id: "editor:format", label: "编辑器：格式化文档", description: "Shift+Alt+F", icon: AlignLeft, category: "action" as const, action: handlers.onFormatDocument }] : []),
     {
       id: "action:new",
       label: "新建连接",
@@ -209,6 +228,43 @@ export function builtinCommands(handlers: {
       category: "action",
       action: handlers.onNewConnection,
     },
+    ...(handlers.onOpenTransfers
+      ? [{
+          id: "action:transfers",
+          label: "打开传输队列",
+          icon: ArrowDownToLine,
+          category: "action" as const,
+          action: handlers.onOpenTransfers,
+        }]
+      : []),
+    ...(handlers.onOpenForwards
+      ? [{
+          id: "action:forwards",
+          label: "管理端口转发",
+          icon: GitPullRequestArrow,
+          category: "action" as const,
+          action: handlers.onOpenForwards,
+        }]
+      : []),
+    ...(handlers.onImportSshConfig
+      ? [{
+          id: "action:import-ssh-config",
+          label: "导入 SSH 配置",
+          description: "从 ~/.ssh/config 导入",
+          icon: Upload,
+          category: "connection" as const,
+          action: handlers.onImportSshConfig,
+        }]
+      : []),
+    ...(handlers.onOpenSecurity
+      ? [{
+          id: "action:security",
+          label: "打开已知主机管理",
+          icon: Shield,
+          category: "action" as const,
+          action: handlers.onOpenSecurity,
+        }]
+      : []),
     {
       id: "action:close-tab",
       label: "关闭当前标签",

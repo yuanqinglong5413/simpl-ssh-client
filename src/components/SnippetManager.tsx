@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, Trash2, X } from "lucide-react";
 import type { Snippet } from "../types";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type Props = { onClose: () => void; onChanged?: () => void };
 
@@ -13,6 +14,7 @@ export function SnippetManager({ onClose, onChanged }: Props) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
+  const dialogRef = useDialogFocus(true, onClose);
 
   async function refresh() {
     try {
@@ -24,14 +26,9 @@ export function SnippetManager({ onClose, onChanged }: Props) {
   }
 
   useEffect(() => {
-    refresh();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onClose]);
+  }, []);
 
   async function create() {
     if (!title.trim() || !content.trim()) return;
@@ -58,9 +55,9 @@ export function SnippetManager({ onClose, onChanged }: Props) {
 
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-labelledby="snippet-manager-title" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-head">
-          <div className="dialog-title">常用命令片段</div>
+          <div className="dialog-title" id="snippet-manager-title">常用命令片段</div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={16} />
           </button>

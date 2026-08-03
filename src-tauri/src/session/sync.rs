@@ -41,6 +41,32 @@ pub struct SyncPlanResult {
     pub task_ids: Vec<String>,
 }
 
+/// 不入队的同步预览，供前端在真正覆盖文件前展示影响范围。
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncPreview {
+    pub upload_count: usize,
+    pub download_count: usize,
+}
+
+struct SyncPlan {
+    uploads: Vec<(PathBuf, String)>,
+    downloads: Vec<(String, PathBuf)>,
+}
+
+/// 仅扫描并计算差异，不创建任何传输任务。
+pub async fn preview_directory_sync(
+    sftp: &SftpSession,
+    local_dir: &Path,
+    remote_dir: &str,
+    mode: SyncMode,
+) -> Result<SyncPreview, String> {
+    let plan = build_plan(sftp, local_dir, remote_dir, mode).await?;
+    Ok(SyncPreview {
+        upload_count: plan.uploads.len(),
+        download_count: plan.downloads.len(),
+    })
+}
+
 /// 执行目录同步：扫描 → 比对 → 入传输队列。
 pub async fn run_directory_sync(
     sftp: &SftpSession,
@@ -50,6 +76,23 @@ pub async fn run_directory_sync(
     remote_dir: &str,
     mode: SyncMode,
 ) -> Result<SyncPlanResult, String> {
+    let plan = build_plan(sftp, local_dir, remote_dir, mode).await?;
+    let upload_count = plan.uploads.len();
+    let download_count = plan.downloads.len();
+    let task_ids = enqueue_plan(queue, session_id, plan).await?;
+    Ok(SyncPlanResult {
+        upload_count,
+        download_count,
+        task_ids,
+    })
+}
+
+async fn build_plan(
+    sftp: &SftpSession,
+    local_dir: &Path,
+    remote_dir: &str,
+    mode: SyncMode,
+) -> Result<SyncPlan, String> {
     let local = scan_local(local_dir).await?;
     let remote = scan_remote(sftp, remote_dir).await?;
 
@@ -97,11 +140,16 @@ pub async fn run_directory_sync(
         }
     }
 
-    let upload_count = uploads.len();
-    let download_count = downloads.len();
+    Ok(SyncPlan { uploads, downloads })
+}
 
+async fn enqueue_plan(
+    queue: &TransferQueue,
+    session_id: &str,
+    plan: SyncPlan,
+) -> Result<Vec<String>, String> {
     let mut task_ids = Vec::new();
-    for (local_path, remote_path) in uploads {
+    for (local_path, remote_path) in plan.uploads {
         let name = format!(
             "同步↑ {}",
             local_path
@@ -122,7 +170,7 @@ pub async fn run_directory_sync(
             .await;
         task_ids.push(id);
     }
-    for (remote_path, local_path) in downloads {
+    for (remote_path, local_path) in plan.downloads {
         let name = format!(
             "同步↓ {}",
             remote_path
@@ -144,11 +192,7 @@ pub async fn run_directory_sync(
         task_ids.push(id);
     }
 
-    Ok(SyncPlanResult {
-        upload_count,
-        download_count,
-        task_ids,
-    })
+    Ok(task_ids)
 }
 
 async fn scan_local(root: &Path) -> Result<HashMap<String, FileMeta>, String> {

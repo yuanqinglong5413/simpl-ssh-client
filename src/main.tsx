@@ -7,14 +7,19 @@ import App from "./App";
 import "./i18n";
 import { SettingsProvider } from "./settings/SettingsProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
+import { TaskProvider } from "./tasks/TaskProvider";
+import { TerminalDiagnosticsProvider } from "./terminal/TerminalDiagnosticsProvider";
+import { ToastProvider } from "./feedback/ToastProvider";
+import { ActivityProvider } from "./activity/ActivityProvider";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
 
 // 注意：不使用 React.StrictMode —— 它在 dev 下会双次挂载 effect，导致终端
 // 的 terminal_open + WebSocket 被连开两次（产生多余的远端 shell）。终端这类
 // 有副作用的组件需要稳定的单次生命周期。
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+ReactDOM.createRoot(document.getElementById("root")!).render(
   <ThemeProvider>
     <SettingsProvider>
-      <App />
+      <ToastProvider><ActivityProvider><TaskProvider><TerminalDiagnosticsProvider><AppErrorBoundary><App /></AppErrorBoundary></TerminalDiagnosticsProvider></TaskProvider></ActivityProvider></ToastProvider>
     </SettingsProvider>
   </ThemeProvider>
 );

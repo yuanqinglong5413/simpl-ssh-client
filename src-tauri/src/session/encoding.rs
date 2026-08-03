@@ -12,7 +12,8 @@ use encoding_rs::{Decoder, Encoding};
 /// 按标签解析编码。`None` / 空 / `utf-8` / 未知 → `None`（表示直通不转换）。
 pub fn encoding_for(label: Option<&str>) -> Option<&'static Encoding> {
     let label = label?.trim();
-    if label.is_empty() || label.eq_ignore_ascii_case("utf-8") || label.eq_ignore_ascii_case("utf8") {
+    if label.is_empty() || label.eq_ignore_ascii_case("utf-8") || label.eq_ignore_ascii_case("utf8")
+    {
         return None;
     }
     Encoding::for_label(label.as_bytes())

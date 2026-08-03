@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type Dispatch, type KeyboardEvent, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
@@ -17,35 +17,60 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
-import type { FileEntry } from "../types";
+import type { ConnectionEnvironment, FileEntry } from "../types";
 import { SyncDialog } from "./SyncDialog";
+import { TransferConfirmDialog, type OverwriteChoice } from "./TransferConfirmDialog";
+import { LoadingState } from "./LoadingState";
+import { useDialogFocus } from "../hooks/useDialogFocus";
+import { useActivity } from "../activity/ActivityProvider";
 
 type Props = {
   sessionId: string;
+  /** 由项目工作区指定时，首次打开的远程目录。 */
+  initialPath?: string;
   /** 双击远程文件时在编辑器中打开 */
   onFileOpen?: (filePath: string) => void;
+  /** 只有当前可见的文件标签响应系统级拖放事件。 */
+  active?: boolean;
+  /** 连接环境只影响危险操作确认，不影响传输协议。 */
+  environment?: ConnectionEnvironment | null;
 };
 
 /**
  * SFTP 双面板：左侧本地 + 右侧远程，中间跨面板传输按钮（→ 上传 / ← 下载）。
  * 传输走全局 TransferQueue（非阻塞），进度/暂停/重试见 TransferPanel。
  */
-export function SftpPane({ sessionId, onFileOpen }: Props) {
+export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, environment }: Props) {
   // 远程侧
   const [cwd, setCwd] = useState("");
   const [pathInput, setPathInput] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   // 本地侧
   const [localCwd, setLocalCwd] = useState("");
   const [localEntries, setLocalEntries] = useState<FileEntry[]>([]);
-  const [localSelected, setLocalSelected] = useState<string | null>(null);
+  const [localSelected, setLocalSelected] = useState<string[]>([]);
 
-  const [loading, setLoading] = useState(false);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [localLoading, setLocalLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState("");
+  const [localError, setLocalError] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  const [pendingTransfer, setPendingTransfer] = useState<{
+    direction: "upload" | "download";
+    names: string[];
+    paths?: string[];
+  } | null>(null);
+  const [operation, setOperation] = useState<SftpOperation | null>(null);
+  const remoteRequestRef = useRef(0);
+  const localRequestRef = useRef(0);
+  const sessionRef = useRef(sessionId);
+  sessionRef.current = sessionId;
+  const { add: addActivity } = useActivity();
   const [filterText, setFilterText] = useState("");
+  const [sortBy, setSortBy] = useState<"name" | "size" | "modified">("name");
   const [bookmarks, setBookmarks] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("sftp-bookmarks") || "[]");
@@ -65,70 +90,84 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
   }
 
   async function load(path?: string) {
-    setLoading(true);
-    setError("");
+    const requestId = ++remoteRequestRef.current;
+    const requestedSession = sessionId;
+    setRemoteLoading(true);
+    setRemoteError("");
     try {
       const [resolved, list] = await invoke<[string, FileEntry[]]>("sftp_list", {
         sessionId,
         path: path ?? null,
       });
+      if (requestId !== remoteRequestRef.current || sessionRef.current !== requestedSession) return;
       setCwd(resolved);
       setPathInput(resolved);
       setEntries(list);
-      setSelected(null);
+      setSelected([]);
     } catch (e) {
-      setError(String(e));
+      if (requestId === remoteRequestRef.current && sessionRef.current === requestedSession) { const message = String(e); setRemoteError(message); addActivity({ id: `sftp:remote:${requestedSession}:${message}`, kind: "sftp", severity: "error", title: "远程文件加载失败", detail: message, referenceId: requestedSession }); }
     } finally {
-      setLoading(false);
+      if (requestId === remoteRequestRef.current && sessionRef.current === requestedSession) setRemoteLoading(false);
     }
   }
 
   async function loadLocal(path?: string) {
-    setError("");
+    const requestId = ++localRequestRef.current;
+    setLocalLoading(true);
+    setLocalError("");
     try {
       const dir = path ?? localCwd;
       if (!dir) {
         const home = await invoke<string>("local_home_dir");
-        return loadLocal(home);
+        if (requestId === localRequestRef.current && sessionRef.current === sessionId) return loadLocal(home);
+        return;
       }
       const list = await invoke<FileEntry[]>("local_list_dir", { path: dir });
+      if (requestId !== localRequestRef.current || sessionRef.current !== sessionId) return;
       setLocalCwd(dir);
       setLocalEntries(list);
-      setLocalSelected(null);
+      setLocalSelected([]);
     } catch (e) {
-      setError(String(e));
+      if (requestId === localRequestRef.current && sessionRef.current === sessionId) { const message = String(e); setLocalError(message); addActivity({ id: `sftp:local:${message}`, kind: "sftp", severity: "error", title: "本地文件加载失败", detail: message }); }
+    } finally {
+      if (requestId === localRequestRef.current && sessionRef.current === sessionId) setLocalLoading(false);
     }
   }
 
   useEffect(() => {
-    load();
-    loadLocal();
+    remoteRequestRef.current += 1;
+    localRequestRef.current += 1;
+    setRemoteError("");
+    setLocalError("");
+    setRemoteLoading(true);
+    setLocalLoading(true);
+    if (!active) return;
+    void load(initialPath || undefined);
+    void loadLocal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [active, sessionId, initialPath]);
 
-  // 拖拽上传：从 OS 拖文件到本面板 → 上传到当前远程目录
-  // 注：多 SFTP Tab 时所有已挂载面板都会响应（已知限制；单 Tab 场景正常）
+  // 拖拽上传是 webview 级事件；隐藏标签不能注册，否则一次 drop 会重复入队。
   useEffect(() => {
+    if (!active) return;
     let un: (() => void) | undefined;
+    let disposed = false;
     const webview = getCurrentWebview();
     webview
       .onDragDropEvent((e) => {
         if (e.payload.type === "drop") {
-          for (const p of e.payload.paths) {
-            const name = p.split(/[\\/]/).filter(Boolean).pop() ?? "file";
-            invoke("transfer_enqueue", {
-              sessionId,
-              kind: "upload",
-              localPath: p,
-              remotePath: join(name),
-            }).catch((err) => setError(String(err)));
-          }
+          const paths = e.payload.paths;
+          setPendingTransfer({
+            direction: "upload",
+            paths,
+            names: paths.map((path) => path.split(/[\\/]/).filter(Boolean).pop() ?? "file"),
+          });
         }
       })
-      .then((fn) => (un = fn));
-    return () => un?.();
+      .then((fn) => { if (disposed) fn(); else un = fn; });
+    return () => { disposed = true; un?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, cwd]);
+  }, [active, sessionId, cwd]);
 
   const sep = localCwd.includes("\\") ? "\\" : "/";
   const join = (name: string) => (cwd === "/" ? `/${name}` : `${cwd}/${name}`);
@@ -153,114 +192,106 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
     if (e.is_dir) loadLocal(localJoin(e.name));
   }
 
-  /** → 上传：本地选中 → 远程当前目录 */
-  async function crossUpload() {
-    if (!localSelected) return;
-    const entry = localEntries.find((e) => e.name === localSelected);
+  function toggleSelection(
+    setter: Dispatch<SetStateAction<string[]>>,
+    name: string,
+    additive: boolean
+  ) {
+    setter((previous) => {
+      if (!additive) return [name];
+      return previous.includes(name)
+        ? previous.filter((item) => item !== name)
+        : [...previous, name];
+    });
+  }
+
+  /** → 上传：本地选中 → 远程当前目录。先展示同名策略。 */
+  function crossUpload() {
+    if (localSelected.length === 0) return;
+    setPendingTransfer({ direction: "upload", names: localSelected });
+  }
+
+  async function enqueueUpload(names: string[], overwrite: OverwriteChoice) {
     setError("");
     try {
-      await invoke("transfer_enqueue", {
-        sessionId,
-        kind: entry?.is_dir ? "uploadDir" : "upload",
-        localPath: localJoin(localSelected),
-        remotePath: join(localSelected),
-      });
+      for (const name of names) {
+        const entry = localEntries.find((e) => e.name === name);
+        await invoke("transfer_enqueue", {
+          sessionId,
+          kind: entry?.is_dir ? "uploadDir" : "upload",
+          localPath: localJoin(name),
+          remotePath: join(name),
+          overwrite,
+        });
+      }
+      setLocalSelected([]);
     } catch (e) {
-      setError(String(e));
+      const message = String(e); setError(message); addActivity({ id: `sftp:upload:${sessionId}:${message}`, kind: "sftp", severity: "error", title: "上传入队失败", detail: message, referenceId: sessionId });
     }
   }
 
-  /** ← 下载：远程选中 → 本地当前目录 */
-  async function crossDownload() {
-    if (!selected) return;
+  async function enqueueDropped(paths: string[], overwrite: OverwriteChoice) {
     setError("");
     try {
-      await invoke("transfer_enqueue", {
-        sessionId,
-        kind: "download",
-        localPath: localJoin(selected),
-        remotePath: join(selected),
-      });
+      for (const path of paths) {
+        const name = path.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+        await invoke("transfer_enqueue", {
+          sessionId,
+          kind: "upload",
+          localPath: path,
+          remotePath: join(name),
+          overwrite,
+        });
+      }
     } catch (e) {
-      setError(String(e));
+      const message = String(e); setError(message); addActivity({ id: `sftp:drop:${sessionId}:${message}`, kind: "sftp", severity: "error", title: "拖放上传失败", detail: message, referenceId: sessionId });
     }
   }
 
-  async function mkdir() {
-    const name = window.prompt("新文件夹名称");
-    if (!name) return;
+  /** ← 下载：远程选中 → 本地当前目录。先展示同名策略。 */
+  function crossDownload() {
+    if (selected.length === 0) return;
+    setPendingTransfer({ direction: "download", names: selected });
+  }
+
+  async function enqueueDownload(names: string[], overwrite: OverwriteChoice) {
+    setError("");
+    try {
+      for (const name of names) {
+        await invoke("transfer_enqueue", {
+          sessionId,
+          kind: "download",
+          localPath: localJoin(name),
+          remotePath: join(name),
+          overwrite,
+        });
+      }
+      setSelected([]);
+    } catch (e) {
+      const message = String(e); setError(message); addActivity({ id: `sftp:download:${sessionId}:${message}`, kind: "sftp", severity: "error", title: "下载入队失败", detail: message, referenceId: sessionId });
+    }
+  }
+
+  async function runOperation(value?: string) {
+    if (!operation) return;
     setBusy(true);
     setError("");
     try {
-      await invoke("sftp_mkdir", { sessionId, path: join(name) });
+      if (operation.kind === "mkdir" && value) {
+        await invoke("sftp_mkdir", { sessionId, path: join(value) });
+      } else if (operation.kind === "rename" && value) {
+        await invoke("sftp_rename", { sessionId, from: join(operation.names[0]), to: join(value) });
+      } else if (operation.kind === "chmod" && value) {
+        await Promise.all(operation.names.map((name) => invoke("sftp_chmod", { sessionId, path: join(name), mode: value })));
+      } else if (operation.kind === "copy" && value) {
+        await invoke("sftp_copy", { sessionId, src: join(operation.names[0]), dst: join(value) });
+      } else if (operation.kind === "delete") {
+        await Promise.all(operation.entries.map((entry) => invoke("sftp_remove", { sessionId, path: join(entry.name), isDir: entry.is_dir })));
+      }
       await load();
+      setOperation(null);
     } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function rename() {
-    if (!selected) return;
-    const to = window.prompt(`将 “${selected}” 重命名为`);
-    if (!to) return;
-    setBusy(true);
-    setError("");
-    try {
-      await invoke("sftp_rename", { sessionId, from: join(selected), to: join(to) });
-      await load();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove() {
-    if (!selected) return;
-    if (!window.confirm(`删除 “${selected}” ？`)) return;
-    const entry = entries.find((x) => x.name === selected);
-    if (!entry) return;
-    setBusy(true);
-    setError("");
-    try {
-      await invoke("sftp_remove", { sessionId, path: join(selected), isDir: entry.is_dir });
-      await load();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function chmod() {
-    if (!selected) return;
-    const mode = window.prompt(`设置 “${selected}” 权限（如 755）`, "644");
-    if (!mode) return;
-    setBusy(true);
-    setError("");
-    try {
-      await invoke("sftp_chmod", { sessionId, path: join(selected), mode });
-      await load();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function copyFile() {
-    if (!selected) return;
-    const dst = window.prompt(`复制 “${selected}” 到`, `${selected}_copy`);
-    if (!dst) return;
-    setBusy(true);
-    setError("");
-    try {
-      await invoke("sftp_copy", { sessionId, src: join(selected), dst: join(dst) });
-      await load();
-    } catch (e) {
-      setError(String(e));
+      const message = String(e); setError(message); addActivity({ id: `sftp:operation:${sessionId}:${message}`, kind: "sftp", severity: "error", title: "SFTP 操作失败", detail: message, referenceId: sessionId });
     } finally {
       setBusy(false);
     }
@@ -268,19 +299,20 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
 
   /** 归档：选中 .tar.gz/.tgz → 解压到当前目录；否则 → 打包为 .tar.gz */
   async function archive() {
-    if (!selected) return;
+    if (selected.length !== 1) return;
+    const selectedName = selected[0];
     setBusy(true);
     setError("");
     try {
-      const isArchive = /\.(tar\.gz|tgz)$/.test(selected);
+      const isArchive = /\.(tar\.gz|tgz)$/.test(selectedName);
       if (isArchive) {
-        await invoke("sftp_untar", { sessionId, src: join(selected), dir: cwd });
+        await invoke("sftp_untar", { sessionId, src: join(selectedName), dir: cwd });
       } else {
-        await invoke("sftp_tar", { sessionId, src: join(selected), dst: join(`${selected}.tar.gz`) });
+        await invoke("sftp_tar", { sessionId, src: join(selectedName), dst: join(`${selectedName}.tar.gz`) });
       }
       await load();
     } catch (e) {
-      setError(String(e));
+      const message = String(e); setError(message); addActivity({ id: `sftp:archive:${sessionId}:${message}`, kind: "sftp", severity: "error", title: "归档操作失败", detail: message, referenceId: sessionId });
     } finally {
       setBusy(false);
     }
@@ -292,8 +324,15 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
 
   // 文件名筛选（本地+远程共用）
   const filter = filterText.trim().toLowerCase();
-  const vis = (es: FileEntry[]) =>
-    filter ? es.filter((e) => e.name.toLowerCase().includes(filter)) : es;
+  const vis = (es: FileEntry[]) => {
+    const filtered = filter ? es.filter((e) => e.name.toLowerCase().includes(filter)) : es;
+    return [...filtered].sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      if (sortBy === "size") return b.size - a.size || a.name.localeCompare(b.name);
+      if (sortBy === "modified") return (b.modified ?? "").localeCompare(a.modified ?? "") || a.name.localeCompare(b.name);
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    });
+  };
 
   return (
     <div className="sftp">
@@ -316,30 +355,35 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
           placeholder="筛选…"
           spellCheck={false}
         />
+        <select className="sftp-sort" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} title="文件排序">
+          <option value="name">按名称</option>
+          <option value="size">按大小</option>
+          <option value="modified">按时间</option>
+        </select>
         <button className="icon-btn" title="刷新远程" onClick={() => load()}>
           <RefreshCw size={15} />
         </button>
         <div className="sftp-sep" />
-        <button className="icon-btn" title="新建远程文件夹" onClick={mkdir} disabled={busy}>
+        <button className="icon-btn" title="新建远程文件夹" aria-label="新建远程文件夹" onClick={() => setOperation({ kind: "mkdir", names: [], entries: [] })} disabled={busy}>
           <FolderPlus size={15} />
         </button>
-        <button className="icon-btn" title="重命名" onClick={rename} disabled={busy || !selected}>
+        <button className="icon-btn" title="重命名" aria-label="重命名选中项" onClick={() => setOperation({ kind: "rename", names: selected, entries: [] })} disabled={busy || selected.length !== 1}>
           <Pencil size={14} />
         </button>
-        <button className="icon-btn danger" title="删除" onClick={remove} disabled={busy || !selected}>
+        <button className="icon-btn danger" title="删除" aria-label="删除选中项" onClick={() => setOperation({ kind: "delete", names: selected, entries: entries.filter((entry) => selected.includes(entry.name)) })} disabled={busy || selected.length === 0}>
           <Trash2 size={15} />
         </button>
-        <button className="icon-btn" title="权限 (chmod)" onClick={chmod} disabled={busy || !selected}>
+        <button className="icon-btn" title="权限 (chmod)" aria-label="修改选中项权限" onClick={() => setOperation({ kind: "chmod", names: selected, entries: [] })} disabled={busy || selected.length === 0}>
           <Lock size={14} />
         </button>
-        <button className="icon-btn" title="复制" onClick={copyFile} disabled={busy || !selected}>
+        <button className="icon-btn" title="复制" aria-label="复制选中文件" onClick={() => setOperation({ kind: "copy", names: selected, entries: [] })} disabled={busy || selected.length !== 1}>
           <Copy size={14} />
         </button>
         <button
           className="icon-btn"
           title="归档（压缩/解压 tar.gz）"
           onClick={archive}
-          disabled={busy || !selected}
+          disabled={busy || selected.length !== 1}
         >
           <Archive size={14} />
         </button>
@@ -348,7 +392,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
         </button>
       </div>
 
-      {error && <div className="sftp-error">{error}</div>}
+      {error && <div className="sftp-error"><span>{error}</span><button type="button" onClick={() => setError("")}>关闭</button></div>}
 
       <div className="sftp-dual">
         <div className="sftp-col">
@@ -371,10 +415,12 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
             <FileList
               entries={vis(localEntries)}
               selected={localSelected}
-              onSelect={setLocalSelected}
+              onSelect={(name, additive) => toggleSelection(setLocalSelected, name, additive)}
               onEnter={localEnter}
               emptyHint="空目录"
-              loading={false}
+              loading={localLoading}
+              error={localError}
+              onRetry={() => void loadLocal()}
             />
           </div>
         </div>
@@ -384,7 +430,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
             className="icon-btn"
             title="上传 →"
             onClick={() => crossUpload()}
-            disabled={!localSelected}
+            disabled={localSelected.length === 0}
           >
             <ArrowRight size={18} />
           </button>
@@ -392,7 +438,7 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
             className="icon-btn"
             title="← 下载"
             onClick={() => crossDownload()}
-            disabled={!selected}
+            disabled={selected.length === 0}
           >
             <ArrowLeft size={18} />
           </button>
@@ -429,10 +475,12 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
             <FileList
               entries={vis(entries)}
               selected={selected}
-              onSelect={setSelected}
+              onSelect={(name, additive) => toggleSelection(setSelected, name, additive)}
               onEnter={enter}
               emptyHint="空目录"
-              loading={loading}
+              loading={remoteLoading}
+              error={remoteError}
+              onRetry={() => void load()}
             />
           </div>
         </div>
@@ -442,9 +490,27 @@ export function SftpPane({ sessionId, onFileOpen }: Props) {
         <SyncDialog
           sessionId={sessionId}
           remoteDir={cwd || "/"}
+          production={environment === "production"}
           onClose={() => setShowSync(false)}
         />
       )}
+      {pendingTransfer && (
+        <TransferConfirmDialog
+          direction={pendingTransfer.direction}
+          count={pendingTransfer.names.length}
+          source={pendingTransfer.paths ? "已拖入的本地文件" : pendingTransfer.direction === "upload" ? localCwd : cwd}
+          destination={pendingTransfer.direction === "upload" ? cwd : localCwd}
+          onClose={() => setPendingTransfer(null)}
+          onConfirm={async (overwrite) => {
+            const pending = pendingTransfer;
+            setPendingTransfer(null);
+            if (pending.paths) await enqueueDropped(pending.paths, overwrite);
+            else if (pending.direction === "upload") await enqueueUpload(pending.names, overwrite);
+            else await enqueueDownload(pending.names, overwrite);
+          }}
+        />
+      )}
+      {operation && <SftpOperationDialog operation={operation} cwd={cwd} busy={busy} production={environment === "production"} onClose={() => !busy && setOperation(null)} onConfirm={runOperation} />}
     </div>
   );
 }
@@ -457,24 +523,35 @@ function FileList({
   onEnter,
   emptyHint,
   loading,
+  error,
+  onRetry,
 }: {
   entries: FileEntry[];
-  selected: string | null;
-  onSelect: (name: string) => void;
+  selected: string[];
+  onSelect: (name: string, additive: boolean) => void;
   onEnter: (e: FileEntry) => void;
   emptyHint: string;
   loading: boolean;
+  error?: string;
+  onRetry?: () => void;
 }) {
-  if (loading) return <div className="sftp-empty">加载中…</div>;
+  if (loading) return <LoadingState compact label="正在加载目录…" />;
+  if (error) return <div className="sftp-empty sftp-list-error"><span>{error}</span>{onRetry && <button type="button" onClick={onRetry}>重试</button>}</div>;
   if (entries.length === 0) return <div className="sftp-empty">{emptyHint}</div>;
   return (
     <>
       {entries.map((e) => (
         <div
           key={e.name}
-          className={`sftp-row ${selected === e.name ? "sel" : ""}`}
-          onClick={() => onSelect(e.name)}
+          className={`sftp-row ${selected.includes(e.name) ? "sel" : ""}`}
+          role="button"
+          tabIndex={0}
+          onClick={(event) => onSelect(e.name, event.metaKey || event.ctrlKey)}
           onDoubleClick={() => onEnter(e)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onEnter(e);
+            if (event.key === " ") { event.preventDefault(); onSelect(e.name, event.metaKey || event.ctrlKey); }
+          }}
         >
           <span className="sftp-icon">
             {e.is_dir ? <Folder size={15} /> : <FileIcon size={15} />}
@@ -485,6 +562,38 @@ function FileList({
         </div>
       ))}
     </>
+  );
+}
+
+type SftpOperationKind = "mkdir" | "rename" | "delete" | "chmod" | "copy";
+type SftpOperation = { kind: SftpOperationKind; names: string[]; entries: FileEntry[] };
+
+function SftpOperationDialog({ operation, cwd, busy, production, onClose, onConfirm }: { operation: SftpOperation; cwd: string; busy: boolean; production: boolean; onClose: () => void; onConfirm: (value?: string) => void }) {
+  const [value, setValue] = useState(operation.kind === "chmod" ? "644" : operation.kind === "copy" ? `${operation.names[0]}_copy` : operation.names[0] ?? "");
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [productionPhrase, setProductionPhrase] = useState("");
+  const isDelete = operation.kind === "delete";
+  const hasDirectory = operation.entries.some((entry) => entry.is_dir);
+  const dialogRef = useDialogFocus(true, () => {
+    if (!busy) onClose();
+  });
+  const title: Record<SftpOperationKind, string> = { mkdir: "新建远程文件夹", rename: "重命名远程文件", delete: "确认删除", chmod: "修改权限", copy: "复制远程文件" };
+  const inputLabel: Partial<Record<SftpOperationKind, string>> = { mkdir: "文件夹名称", rename: "新名称", chmod: "权限（如 755）", copy: "目标文件名或路径" };
+  return (
+    <div className="overlay" onClick={busy ? undefined : onClose}>
+      <div ref={dialogRef} className="dialog sftp-operation-dialog" role="dialog" aria-modal="true" aria-labelledby="sftp-operation-title" onClick={(event) => event.stopPropagation()}>
+        <div className="dialog-head"><div className="dialog-title" id="sftp-operation-title">{title[operation.kind]}</div><button type="button" aria-label="关闭" disabled={busy} onClick={onClose}>×</button></div>
+        <div className="dialog-body">
+          {isDelete ? <>
+            <p className="sftp-danger-copy">将从远程主机永久删除以下 {operation.names.length} 项。{hasDirectory ? "目录删除可能失败（非空目录），请先确认其内容。" : ""}</p>
+            <div className="sftp-operation-paths">{operation.names.map((name) => <code key={name}>{cwd === "/" ? `/${name}` : `${cwd}/${name}`}</code>)}</div>
+            <label className="check"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} /> 我已确认这些远程路径和影响范围</label>
+            {production && <label className="field sftp-production-confirm">这是生产环境。输入“生产”以删除<input value={productionPhrase} onChange={(event) => setProductionPhrase(event.target.value)} placeholder="生产" /></label>}
+          </> : <div className="field"><label>{inputLabel[operation.kind]}</label><input value={value} autoFocus onChange={(event) => setValue(event.target.value)} /></div>}
+        </div>
+        <div className="dialog-foot"><button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button><button type="button" className={`btn ${isDelete ? "btn-danger" : "btn-primary"}`} disabled={busy || (isDelete ? (!acknowledged || (production && productionPhrase.trim() !== "生产")) : !value.trim())} onClick={() => onConfirm(isDelete ? undefined : value.trim())}>{busy ? "处理中…" : isDelete ? "删除" : "确认"}</button></div>
+      </div>
+    </div>
   );
 }
 

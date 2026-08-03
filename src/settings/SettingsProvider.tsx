@@ -26,7 +26,35 @@ function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (raw) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      const saved = JSON.parse(raw) as Partial<AppSettings> & { agentPresets?: Array<Record<string, unknown>>; languageServers?: Array<Record<string, unknown>>; installedLspPlugins?: Array<Record<string, unknown>> };
+      const agentPresets = Array.isArray(saved.agentPresets)
+        ? saved.agentPresets.flatMap((preset) => {
+            const id = typeof preset.id === "string" ? preset.id.trim() : "";
+            const name = typeof preset.name === "string" ? preset.name.trim() : "";
+            const command = typeof preset.command === "string" ? preset.command.trim() : "";
+            return id && name && command ? [{ id, name, command }] : [];
+          })
+        : DEFAULT_SETTINGS.agentPresets;
+      const rawServers = Array.isArray(saved.languageServers) ? saved.languageServers : saved.customServers;
+      const languageServers = Array.isArray(rawServers)
+        ? rawServers.flatMap((server) => {
+            const id = typeof server.id === "string" ? server.id.trim() : "";
+            const name = typeof server.name === "string" ? server.name.trim() : id;
+            const command = typeof server.command === "string" ? server.command.trim() : "";
+            const languages = Array.isArray(server.languages) ? server.languages.filter((value): value is string => typeof value === "string" && value.trim().length > 0).map((value) => value.trim()) : [];
+            const args = Array.isArray(server.args) ? server.args.filter((value): value is string => typeof value === "string") : [];
+            const rootMarkers = Array.isArray(server.rootMarkers) ? server.rootMarkers.filter((value): value is string => typeof value === "string" && value.trim().length > 0).map((value) => value.trim()) : [];
+            return id && name && command && languages.length ? [{ id, name, command, languages, args, enabled: server.enabled !== false, rootMarkers }] : [];
+          })
+        : DEFAULT_SETTINGS.languageServers;
+      const installedLspPlugins = Array.isArray(saved.installedLspPlugins) ? saved.installedLspPlugins.flatMap((item) => {
+        const value = item as Record<string, unknown>;
+        return typeof value.pluginId === "string" && typeof value.version === "string" ? [{ pluginId: value.pluginId, version: value.version, enabled: value.enabled !== false, priority: typeof value.priority === "number" ? value.priority : 0, ...(value.source === "system" || value.source === "bundled" ? { source: value.source as "system" | "bundled" } : {}) }] : [];
+      }) : DEFAULT_SETTINGS.installedLspPlugins;
+      const languageHighlighting = saved.languageHighlighting && typeof saved.languageHighlighting === "object"
+        ? Object.fromEntries(Object.entries(saved.languageHighlighting).filter(([, value]) => typeof value === "boolean"))
+        : DEFAULT_SETTINGS.languageHighlighting;
+      return { ...DEFAULT_SETTINGS, ...saved, agentPresets, languageServers, customServers: languageServers, installedLspPlugins, languageHighlighting, lspUpdateChannel: "stable" as const };
     }
   } catch {
     /* 忽略损坏数据 */

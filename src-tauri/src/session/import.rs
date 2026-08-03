@@ -43,6 +43,7 @@ pub fn parse_ssh_config(content: &str) -> Vec<ProfileInput> {
                         encoding: None,
                         keepalive_interval: None,
                         startup_command: None,
+                        environment: None,
                     })
                 };
             }
@@ -122,7 +123,11 @@ Host web2\n\
         assert_eq!(parsed[0].port, 2222);
         assert_eq!(parsed[0].user, "admin");
         assert_eq!(parsed[0].auth_method, AuthMethod::PrivateKey);
-        assert!(parsed[0].private_key_path.as_deref().unwrap().ends_with("id_ed25519"));
+        assert!(parsed[0]
+            .private_key_path
+            .as_deref()
+            .unwrap()
+            .ends_with("id_ed25519"));
         assert_eq!(parsed[1].host, "10.0.0.2");
         // 通配符 Host * 被跳过
         assert!(parsed.iter().all(|p| !p.name.contains('*')));

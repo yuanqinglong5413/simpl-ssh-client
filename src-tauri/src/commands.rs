@@ -1,10 +1,16 @@
 //! 暴露给前端的 Tauri 命令。
 
-use std::sync::Arc;
+use std::{
+    env, fs,
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
 
 use russh::ChannelMsg;
 use serde::Serialize;
-use tauri::AppHandle;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc;
 
 use crate::session::forward::{ForwardKind, PortForwardManager};
@@ -18,10 +24,166 @@ use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
-    connect_and_exec, AuthMethod, HostKeyVerifier, LocalPtyRegistry, MonitorSnapshot, MonitorStore,
-    Project, ProjectInput, ProjectStore, SessionInfo, SessionManager, SshAuth, SshConnectParams,
-    TerminalBridge, WorkspaceStore,
+    connect_and_exec, AuthMethod, HostKeyVerifier, InstalledLspPlugin, LocalPtyRegistry,
+    LspManager, LspPluginManager, LspPluginManifest, LspRequest, LspState, MonitorSnapshot,
+    MonitorStore, Project, ProjectBatchJob, ProjectBatchManager, ProjectIndexManager, ProjectInput,
+    ProjectSearchManager, ProjectStore, ProjectWatchManager, SessionInfo, SessionManager, SshAuth,
+    SshConnectParams, TaskRunner, TerminalBridge, WorkspaceStore,
 };
+
+#[derive(Serialize)]
+pub struct ProjectSearchMatch {
+    pub path: String,
+    pub line: u32,
+    pub preview: String,
+}
+
+/// 将相对路径限制在已验证的项目根目录内。不存在的写入目标也会验证其最近存在父目录。
+fn resolve_project_path(root: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let root = fs::canonicalize(root).map_err(|e| format!("无法访问项目根目录：{e}"))?;
+    if !root.is_dir() {
+        return Err("项目根目录不是文件夹".to_string());
+    }
+    let requested = Path::new(relative_path);
+    if requested.is_absolute()
+        || requested.components().any(|part| {
+            matches!(
+                part,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("文件路径必须位于项目根目录内".to_string());
+    }
+    // 项目工作台不跟随符号链接：即便链接最终仍位于根目录中，也可能在
+    // 移动/删除期间变更目标，无法保证操作对象稳定。
+    let mut inspected = root.clone();
+    for part in requested.components() {
+        if let Component::Normal(name) = part {
+            inspected.push(name);
+            if inspected.exists()
+                && fs::symlink_metadata(&inspected)
+                    .map_err(|e| e.to_string())?
+                    .file_type()
+                    .is_symlink()
+            {
+                return Err("项目工作台不支持操作符号链接".to_string());
+            }
+        }
+    }
+    let candidate = root.join(requested);
+    let verified = if candidate.exists() {
+        fs::canonicalize(&candidate).map_err(|e| e.to_string())?
+    } else {
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| "无效文件路径".to_string())?;
+        let verified_parent =
+            fs::canonicalize(parent).map_err(|e| format!("目标目录不存在或不可访问：{e}"))?;
+        verified_parent.join(
+            candidate
+                .file_name()
+                .ok_or_else(|| "无效文件路径".to_string())?,
+        )
+    };
+    if !verified.starts_with(&root) {
+        return Err("拒绝访问项目根目录外的文件".to_string());
+    }
+    Ok(verified)
+}
+
+fn project_root(root: &str) -> Result<PathBuf, String> {
+    let root = fs::canonicalize(root).map_err(|e| format!("无法访问项目根目录：{e}"))?;
+    if root.is_dir() {
+        Ok(root)
+    } else {
+        Err("项目根目录不是文件夹".to_string())
+    }
+}
+
+fn non_root_project_path(root: &str, relative_path: &str) -> Result<PathBuf, String> {
+    if relative_path.trim().is_empty() || relative_path == "." {
+        return Err("不能操作项目根目录".to_string());
+    }
+    resolve_project_path(root, relative_path)
+}
+
+#[derive(Serialize)]
+pub struct ProjectDeletePreview {
+    pub files: u64,
+    pub directories: u64,
+    pub paths: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ProjectPathChange {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ProjectOperationFailure {
+    pub path: String,
+    pub error: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ProjectBatchResult {
+    pub completed: Vec<ProjectPathChange>,
+    pub failed: Vec<ProjectOperationFailure>,
+}
+
+fn count_delete_target(path: &Path, result: &mut ProjectDeletePreview) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("项目工作台不支持操作符号链接".to_string());
+    }
+    if metadata.is_dir() {
+        result.directories += 1;
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            count_delete_target(&entry.map_err(|e| e.to_string())?.path(), result)?;
+        }
+    } else {
+        result.files += 1;
+    }
+    Ok(())
+}
+
+fn copy_recursively(source: &Path, target: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("项目工作台不支持复制符号链接".to_string());
+    }
+    if metadata.is_dir() {
+        fs::create_dir(target).map_err(|e| e.to_string())?;
+        for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            copy_recursively(&entry.path(), &target.join(entry.file_name()))?;
+        }
+    } else {
+        fs::copy(source, target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn project_entry(_path: &Path, entry: &fs::DirEntry) -> Result<FileEntry, String> {
+    let metadata = entry.metadata().map_err(|e| e.to_string())?;
+    Ok(FileEntry {
+        name: entry.file_name().to_string_lossy().to_string(),
+        is_dir: metadata.is_dir(),
+        is_symlink: entry.file_type().map_err(|e| e.to_string())?.is_symlink(),
+        size: if metadata.is_file() {
+            metadata.len()
+        } else {
+            0
+        },
+        modified: metadata.modified().ok().map(|time| {
+            chrono::DateTime::<chrono::Local>::from(time)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        }),
+    })
+}
 
 // ==============================  SSH 会话  =================================
 
@@ -143,6 +305,8 @@ pub async fn terminal_open(
                 .await
                 .map_err(|e| format!("X11 转发请求失败：{e}"))?;
         }
+        // 远端 sshd 可以拒绝 SetEnv；这不应阻断正常 PTY 连接。
+        let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
         channel
             .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
             .await
@@ -178,13 +342,19 @@ pub async fn terminal_open(
         let mut decode_buf = String::with_capacity(8192);
         loop {
             tokio::select! {
-                Some(bytes) = input_rx.recv() => {
-                    let payload = codec.encode_input(&bytes);
-                    if channel.data_bytes(payload).await.is_err() { break; }
-                }
-                Some((cols, rows)) = resize_rx.recv() => {
-                    if channel.window_change(cols, rows, 0, 0).await.is_err() { break; }
-                }
+                bytes = input_rx.recv() => match bytes {
+                    Some(bytes) => {
+                        let payload = codec.encode_input(&bytes);
+                        if channel.data_bytes(payload).await.is_err() { break; }
+                    }
+                    None => break,
+                },
+                size = resize_rx.recv() => match size {
+                    Some((cols, rows)) => {
+                        if channel.window_change(cols, rows, 0, 0).await.is_err() { break; }
+                    }
+                    None => break,
+                },
                 msg = channel.wait() => match msg {
                     Some(ChannelMsg::Data { ref data }) => {
                         let decoded = codec.decode_output(data.as_ref(), &mut decode_buf, false);
@@ -275,7 +445,11 @@ pub async fn sftp_chmod(
         .get(&session_id)
         .await
         .ok_or_else(|| format!("session not found: {session_id}"))?;
-    let cmd = format!("chmod {} {}", mode, crate::session::git_ops::shellescape(&path));
+    let cmd = format!(
+        "chmod {} {}",
+        mode,
+        crate::session::git_ops::shellescape(&path)
+    );
     crate::session::git_ops::exec_on_session(&entry.handle, &cmd)
         .await
         .map(|_| ())
@@ -385,6 +559,8 @@ pub struct RemoteFileContent {
     pub size: u64,
     pub modified: Option<String>,
     pub encoding: String,
+    /// 本地项目文件的乐观并发版本；远程 SFTP 读取不提供此值。
+    pub revision: Option<String>,
 }
 
 /// 通过 SFTP 读取远程文件全部内容（仅支持文本文件，5MB 上限）。
@@ -438,6 +614,7 @@ pub async fn sftp_read_file(
         size,
         modified,
         encoding: "utf-8".to_string(),
+        revision: None,
     })
 }
 
@@ -496,7 +673,15 @@ pub async fn transfer_enqueue(
         })
         .unwrap_or_else(|| "transfer".to_string());
     Ok(queue
-        .enqueue(session_id, kind, local_path, remote_path, name, overwrite, max_retries)
+        .enqueue(
+            session_id,
+            kind,
+            local_path,
+            remote_path,
+            name,
+            overwrite,
+            max_retries,
+        )
         .await)
 }
 
@@ -550,9 +735,7 @@ pub async fn transfer_retry(
 
 /// 清除所有已结束的传输任务。
 #[tauri::command]
-pub async fn transfer_clear_done(
-    queue: tauri::State<'_, TransferQueue>,
-) -> Result<usize, String> {
+pub async fn transfer_clear_done(queue: tauri::State<'_, TransferQueue>) -> Result<usize, String> {
     Ok(queue.clear_done().await)
 }
 
@@ -589,6 +772,22 @@ pub async fn sync_directory(
         mode,
     )
     .await
+}
+
+/// 目录同步预览：扫描两侧目录树并返回将上传/下载的数量，不创建传输任务。
+#[tauri::command]
+pub async fn sync_preview(
+    sessions: tauri::State<'_, SessionManager>,
+    sftp_mgr: tauri::State<'_, SftpManager>,
+    session_id: String,
+    local_dir: String,
+    remote_dir: String,
+    mode: String,
+) -> Result<crate::session::sync::SyncPreview, String> {
+    use crate::session::sync::{preview_directory_sync, SyncMode};
+    let mode = SyncMode::from_str(&mode)?;
+    let sftp = sftp_mgr.get(sessions.inner(), &session_id).await?;
+    preview_directory_sync(&sftp, std::path::Path::new(&local_dir), &remote_dir, mode).await
 }
 
 // ==============================  端口转发  =================================
@@ -702,6 +901,7 @@ pub async fn profile_save(
     encoding: Option<String>,
     keepalive_interval: Option<u64>,
     startup_command: Option<String>,
+    environment: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -719,6 +919,7 @@ pub async fn profile_save(
             encoding,
             keepalive_interval,
             startup_command,
+            environment,
         })
         .await
 }
@@ -742,6 +943,7 @@ pub async fn profile_update(
     encoding: Option<String>,
     keepalive_interval: Option<u64>,
     startup_command: Option<String>,
+    environment: Option<String>,
 ) -> Result<crate::session::profile::ConnectionProfile, String> {
     let method = parse_auth_method(&auth_method)?;
     state
@@ -761,6 +963,7 @@ pub async fn profile_update(
                 encoding,
                 keepalive_interval,
                 startup_command,
+                environment,
             },
         )
         .await
@@ -1148,7 +1351,9 @@ pub async fn git_push(
         .get(&session_id)
         .await
         .ok_or_else(|| format!("session not found: {session_id}"))?;
-    exec_git(&entry.handle, &repo_path, "push").await.map(|_| ())
+    exec_git(&entry.handle, &repo_path, "push")
+        .await
+        .map(|_| ())
 }
 
 /// git pull --ff-only。
@@ -1329,6 +1534,253 @@ pub async fn local_terminal_open(
     .await
 }
 
+/// 检查本地 PATH 中是否存在某个 Agent 可执行文件；不执行命令本身。
+#[tauri::command]
+pub async fn local_command_available(executable: String) -> Result<bool, String> {
+    let executable = executable.trim();
+    if executable.is_empty() || executable.contains(['/', '\\']) {
+        return Ok(false);
+    }
+    let suffixes: Vec<String> = if cfg!(windows) {
+        env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
+            .split(';')
+            .map(|v| v.to_ascii_lowercase())
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    Ok(env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .any(|dir| {
+            suffixes.iter().any(|suffix| {
+                let candidate: PathBuf = dir.join(format!("{executable}{suffix}"));
+                is_executable_file(&candidate)
+            })
+        }))
+}
+
+// ==============================  本地 LSP  =================================
+
+#[tauri::command]
+pub async fn lsp_start(
+    app: AppHandle,
+    manager: tauri::State<'_, LspManager>,
+    server_id: String,
+    root: String,
+    command: String,
+    args: Vec<String>,
+) -> Result<LspState, String> {
+    manager.start(app, server_id, root, command, args).await
+}
+
+#[tauri::command]
+pub async fn lsp_stop(
+    manager: tauri::State<'_, LspManager>,
+    server_id: String,
+) -> Result<(), String> {
+    manager.stop(&server_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn lsp_request(
+    manager: tauri::State<'_, LspManager>,
+    server_id: String,
+    method: String,
+    params: Value,
+) -> Result<Value, String> {
+    manager
+        .request(&server_id, LspRequest { method, params })
+        .await
+}
+
+#[tauri::command]
+pub async fn lsp_notify(
+    manager: tauri::State<'_, LspManager>,
+    server_id: String,
+    method: String,
+    params: Value,
+) -> Result<(), String> {
+    manager.notify(&server_id, method, params).await
+}
+
+#[tauri::command]
+pub async fn lsp_restart(
+    app: AppHandle,
+    manager: tauri::State<'_, LspManager>,
+    server_id: String,
+    root: String,
+    command: String,
+    args: Vec<String>,
+) -> Result<LspState, String> {
+    manager.start(app, server_id, root, command, args).await
+}
+
+#[tauri::command]
+pub async fn lsp_status(
+    manager: tauri::State<'_, LspManager>,
+    server_id: String,
+) -> Result<Option<LspState>, String> {
+    Ok(manager.status(&server_id).await)
+}
+
+#[tauri::command]
+pub async fn lsp_catalog_list(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+) -> Result<Vec<LspPluginManifest>, String> {
+    plugins.catalog(&app).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_status(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+) -> Result<Vec<InstalledLspPlugin>, String> {
+    plugins.status(&app).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_refresh_catalog(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+) -> Result<Vec<LspPluginManifest>, String> {
+    plugins.refresh_catalog(&app).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_check(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+) -> Result<Vec<crate::session::LspPluginAvailability>, String> {
+    plugins.check(&app).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_install(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    plugin_id: String,
+    version: String,
+) -> Result<InstalledLspPlugin, String> {
+    plugins.install(&app, &plugin_id, &version).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_uninstall(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    plugin_id: String,
+    version: String,
+) -> Result<(), String> {
+    plugins.uninstall(&app, &plugin_id, &version).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_enable(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    plugin_id: String,
+    version: String,
+    priority: Option<i32>,
+) -> Result<Vec<InstalledLspPlugin>, String> {
+    plugins
+        .enable(&app, &plugin_id, &version, true, priority.unwrap_or(0))
+        .await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_disable(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    plugin_id: String,
+    version: String,
+) -> Result<Vec<InstalledLspPlugin>, String> {
+    plugins.enable(&app, &plugin_id, &version, false, 0).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_resolve(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    plugin_id: String,
+    version: String,
+) -> Result<(String, Vec<String>), String> {
+    plugins.resolve(&app, &plugin_id, &version).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_start_plugin(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    manager: tauri::State<'_, LspManager>,
+    project_id: String,
+    plugin_id: String,
+    version: String,
+    root: String,
+    args: Option<Vec<String>>,
+) -> Result<LspState, String> {
+    let (command, default_args) = plugins.resolve(&app, &plugin_id, &version).await?;
+    let mut args = args.unwrap_or(default_args);
+    if plugin_id == "jdtls" && !args.iter().any(|arg| arg == "-data") {
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let project_key = Sha256::digest(project_id.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let workspace = app_data.join("lsp/workspaces").join(project_key);
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .map_err(|error| format!("无法创建 JDTLS 工作区：{error}"))?;
+        args.extend(["-data".into(), workspace.to_string_lossy().into_owned()]);
+    }
+    manager
+        .start(
+            app,
+            format!("{project_id}:{plugin_id}"),
+            root,
+            command.clone(),
+            args,
+        )
+        .await
+        .map_err(|error| {
+            let missing_executable = error.contains("No such file")
+                || error.contains("cannot find")
+                || error.contains("系统找不到");
+            if missing_executable {
+                format!(
+                    "无法启动 {plugin_id}：找不到可执行文件 `{command}`。请先安装对应语言服务并确保它在 PATH 中，或在设置中添加自定义服务。"
+                )
+            } else {
+                error
+            }
+        })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 // ==============================  项目管理  =================================
 
 #[tauri::command]
@@ -1359,6 +1811,14 @@ pub async fn project_delete(
     id: String,
 ) -> Result<(), String> {
     store.delete(&id).await
+}
+
+#[tauri::command]
+pub async fn project_prune_agent_bindings(
+    store: tauri::State<'_, ProjectStore>,
+    preset_ids: Vec<String>,
+) -> Result<usize, String> {
+    store.prune_agent_bindings(preset_ids).await
 }
 
 // ==============================  本地文件  =================================
@@ -1432,6 +1892,7 @@ pub async fn local_read_file(path: String) -> Result<RemoteFileContent, String> 
         size: metadata.len(),
         modified,
         encoding: "utf-8".to_string(),
+        revision: None,
     })
 }
 
@@ -1439,6 +1900,846 @@ pub async fn local_read_file(path: String) -> Result<RemoteFileContent, String> 
 #[tauri::command]
 pub async fn local_write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+// =========================== 项目受控文件系统 ============================
+
+/// 列出项目内一个目录；使用 ignore crate 自动遵循 .gitignore，且不允许越过项目根目录。
+#[tauri::command]
+pub async fn project_list_dir(
+    root: String,
+    relative_path: String,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<FileEntry>, String> {
+    tokio::task::spawn_blocking(move || list_project_directory(&root, &relative_path, exclude))
+        .await
+        .map_err(|error| format!("项目目录读取任务意外终止：{error}"))?
+}
+
+fn list_project_directory(
+    root: &str,
+    relative_path: &str,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<FileEntry>, String> {
+    let directory = resolve_project_path(root, relative_path)?;
+    if !directory.is_dir() {
+        return Err("目标不是目录".to_string());
+    }
+    let root_path = project_root(root)?;
+    // 文件树只读取当前层，不能为展示一个目录而启动递归 Walker。除了会造成
+    // 大仓库首屏卡顿外，某些全局 gitignore / 文件系统挂载点会让 Walker 长时间
+    // 不返回，最终表现为项目工作台一直是空白加载态。
+    let mut ignore_builder = ignore::gitignore::GitignoreBuilder::new(&root_path);
+    let gitignore = root_path.join(".gitignore");
+    if gitignore.is_file() {
+        ignore_builder.add(gitignore);
+    }
+    for pattern in exclude.unwrap_or_default() {
+        let pattern = pattern.trim();
+        if !pattern.is_empty() {
+            ignore_builder
+                .add_line(None, pattern)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    let ignored = ignore_builder.build().map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for result in fs::read_dir(&directory).map_err(|e| e.to_string())? {
+        let entry = result.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if ignored
+            .matched_path_or_any_parents(&path, file_type.is_dir())
+            .is_ignore()
+        {
+            continue;
+        }
+        entries.push(project_entry(&path, &entry)?);
+    }
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+pub async fn project_read_file(
+    root: String,
+    relative_path: String,
+) -> Result<RemoteFileContent, String> {
+    tokio::task::spawn_blocking(move || project_read_file_sync(&root, &relative_path))
+        .await
+        .map_err(|error| format!("项目文件读取任务意外终止：{error}"))?
+}
+
+fn project_read_file_sync(root: &str, relative_path: &str) -> Result<RemoteFileContent, String> {
+    let path = resolve_project_path(root, relative_path)?;
+    let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("目标不是文件".to_string());
+    }
+    if metadata.len() > 5 * 1024 * 1024 {
+        return Err("文件超过 5MB 编辑上限".to_string());
+    }
+    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.iter().take(1024).any(|byte| *byte == 0) {
+        return Err("不支持编辑二进制文件".to_string());
+    }
+    let content = String::from_utf8(bytes).map_err(|_| "文件不是 UTF-8 文本".to_string())?;
+    Ok(RemoteFileContent {
+        path: relative_path.to_string(),
+        content,
+        size: metadata.len(),
+        modified: metadata.modified().ok().map(|time| {
+            chrono::DateTime::<chrono::Local>::from(time)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        }),
+        encoding: "utf-8".to_string(),
+        revision: Some(file_revision(&path)?),
+    })
+}
+
+#[tauri::command]
+pub async fn project_write_file(
+    root: String,
+    relative_path: String,
+    content: String,
+    expected_revision: Option<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        project_write_file_sync(&root, &relative_path, &content, expected_revision)
+    })
+    .await
+    .map_err(|error| format!("项目文件写入任务意外终止：{error}"))?
+}
+
+fn project_write_file_sync(
+    root: &str,
+    relative_path: &str,
+    content: &str,
+    expected_revision: Option<String>,
+) -> Result<(), String> {
+    if content.len() > 5 * 1024 * 1024 {
+        return Err("文件内容超过 5MB 编辑上限".to_string());
+    }
+    // 工作区配置是唯一允许由 IDE 首次创建父目录的受控位置。
+    if relative_path.starts_with(".simpl-ssh/") {
+        let root_path = fs::canonicalize(root).map_err(|e| format!("无法访问项目根目录：{e}"))?;
+        fs::create_dir_all(root_path.join(".simpl-ssh")).map_err(|e| e.to_string())?;
+    }
+    let path = resolve_project_path(root, relative_path)?;
+    if let Some(expected) = expected_revision {
+        let actual = file_revision(&path)?;
+        if actual != expected {
+            return Err("文件已被外部修改，请先比较或重新加载".to_string());
+        }
+    }
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+fn file_revision(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|time| time.as_nanos())
+        .unwrap_or_default();
+    let digest = Sha256::digest(fs::read(path).map_err(|e| e.to_string())?);
+    let hash = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("{}:{modified}:{hash}", metadata.len()))
+}
+
+#[tauri::command]
+pub async fn project_search(
+    root: String,
+    query: String,
+    limit: Option<usize>,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<ProjectSearchMatch>, String> {
+    tokio::task::spawn_blocking(move || project_search_sync(&root, &query, limit, exclude))
+        .await
+        .map_err(|error| format!("项目搜索任务意外终止：{error}"))?
+}
+
+fn project_search_sync(
+    root: &str,
+    query: &str,
+    limit: Option<usize>,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<ProjectSearchMatch>, String> {
+    let root_path = fs::canonicalize(root).map_err(|e| format!("无法访问项目根目录：{e}"))?;
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let max = limit.unwrap_or(200).clamp(1, 500);
+    let needle = query.to_lowercase();
+    let mut overrides = ignore::overrides::OverrideBuilder::new(&root_path);
+    for entry in exclude.unwrap_or_default() {
+        let _ = overrides.add(&entry);
+    }
+    let override_rules = overrides.build().map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    for result in ignore::WalkBuilder::new(&root_path)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .overrides(override_rules)
+        .build()
+    {
+        let item = result.map_err(|e| e.to_string())?;
+        if !item.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Ok(metadata) = item.metadata() else {
+            continue;
+        };
+        if metadata.len() > 1024 * 1024 {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(item.path()) else {
+            continue;
+        };
+        for (index, line) in content.lines().enumerate() {
+            if line.to_lowercase().contains(&needle) {
+                results.push(ProjectSearchMatch {
+                    path: item
+                        .path()
+                        .strip_prefix(&root_path)
+                        .unwrap_or(item.path())
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    line: (index + 1) as u32,
+                    preview: line.trim().chars().take(240).collect(),
+                });
+                if results.len() >= max {
+                    return Ok(results);
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+/// 为快速打开提供轻量索引。按文件名过滤，不读取文件内容。
+#[tauri::command]
+pub async fn project_index_files(
+    root: String,
+    query: Option<String>,
+    limit: Option<usize>,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || project_index_files_sync(&root, query, limit, exclude))
+        .await
+        .map_err(|error| format!("项目文件索引任务意外终止：{error}"))?
+}
+
+#[tauri::command]
+pub async fn project_index_start(
+    app: AppHandle,
+    state: tauri::State<'_, ProjectIndexManager>,
+    root: String,
+    query: Option<String>,
+    limit: Option<usize>,
+    exclude: Option<Vec<String>>,
+) -> Result<String, String> {
+    let root = project_root(&root)?;
+    Ok(state.start(
+        app,
+        root,
+        query.unwrap_or_default(),
+        limit.unwrap_or(1000),
+        exclude.unwrap_or_default(),
+    ))
+}
+
+#[tauri::command]
+pub async fn project_index_cancel(
+    state: tauri::State<'_, ProjectIndexManager>,
+    job_id: String,
+) -> Result<(), String> {
+    state.cancel(&job_id)
+}
+
+#[tauri::command]
+pub async fn project_search_start(
+    app: AppHandle,
+    state: tauri::State<'_, ProjectSearchManager>,
+    root: String,
+    query: String,
+    limit: Option<usize>,
+    exclude: Option<Vec<String>>,
+) -> Result<String, String> {
+    Ok(state.start(
+        app,
+        project_root(&root)?,
+        query,
+        limit.unwrap_or(200),
+        exclude.unwrap_or_default(),
+    ))
+}
+
+#[tauri::command]
+pub async fn project_search_cancel(
+    state: tauri::State<'_, ProjectSearchManager>,
+    job_id: String,
+) -> Result<(), String> {
+    state.cancel(&job_id);
+    Ok(())
+}
+
+fn project_index_files_sync(
+    root: &str,
+    query: Option<String>,
+    limit: Option<usize>,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    let root_path = project_root(root)?;
+    let needle = query.unwrap_or_default().trim().to_lowercase();
+    let max = limit.unwrap_or(1000).clamp(1, 3000);
+    let mut overrides = ignore::overrides::OverrideBuilder::new(&root_path);
+    for entry in exclude.unwrap_or_default() {
+        let _ = overrides.add(&entry);
+    }
+    let override_rules = overrides.build().map_err(|e| e.to_string())?;
+    let mut paths = Vec::new();
+    for result in ignore::WalkBuilder::new(&root_path)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .overrides(override_rules)
+        .build()
+    {
+        let item = result.map_err(|e| e.to_string())?;
+        if !item.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let relative = item
+            .path()
+            .strip_prefix(&root_path)
+            .unwrap_or(item.path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        if needle.is_empty() || relative.to_lowercase().contains(&needle) {
+            paths.push(relative);
+            if paths.len() >= max {
+                break;
+            }
+        }
+    }
+    paths.sort_by_key(|path| path.to_lowercase());
+    Ok(paths)
+}
+
+#[tauri::command]
+pub async fn project_create_entry(
+    root: String,
+    parent_path: String,
+    name: String,
+    directory: bool,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err("名称不能包含路径分隔符".to_string());
+    }
+    let parent = resolve_project_path(&root, &parent_path)?;
+    if !parent.is_dir() {
+        return Err("目标父目录不存在".to_string());
+    }
+    let target = parent.join(name);
+    if target.exists() {
+        return Err("同名文件或文件夹已存在".to_string());
+    }
+    if directory {
+        fs::create_dir(&target).map_err(|e| e.to_string())?;
+    } else {
+        fs::File::create(&target).map_err(|e| e.to_string())?;
+    }
+    Ok(Path::new(&parent_path)
+        .join(name)
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
+#[tauri::command]
+pub async fn project_rename(
+    root: String,
+    path: String,
+    new_name: String,
+) -> Result<ProjectPathChange, String> {
+    let source = non_root_project_path(&root, &path)?;
+    let name = new_name.trim();
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err("名称不能包含路径分隔符".to_string());
+    }
+    let target = source
+        .parent()
+        .ok_or_else(|| "无效文件路径".to_string())?
+        .join(name);
+    if target.exists() {
+        return Err("同名文件或文件夹已存在".to_string());
+    }
+    fs::rename(&source, &target).map_err(|e| e.to_string())?;
+    let next_path = Path::new(&path)
+        .parent()
+        .unwrap_or(Path::new(""))
+        .join(name)
+        .to_string_lossy()
+        .replace('\\', "/");
+    Ok(ProjectPathChange {
+        from: path,
+        to: next_path,
+    })
+}
+
+fn prepare_project_transfer(
+    root: &str,
+    paths: &[String],
+    destination: &str,
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    if paths.is_empty() {
+        return Err("请选择至少一个文件或文件夹".to_string());
+    }
+    let destination = resolve_project_path(root, destination)?;
+    if !destination.is_dir() {
+        return Err("目标必须是项目内文件夹".to_string());
+    }
+    let mut transfers = Vec::new();
+    for path in paths {
+        let source = non_root_project_path(root, path)?;
+        let name = source
+            .file_name()
+            .ok_or_else(|| "无效文件路径".to_string())?;
+        let target = destination.join(name);
+        if target.exists() {
+            return Err(format!("目标已存在：{}", target.display()));
+        }
+        if destination.starts_with(&source) {
+            return Err("不能将文件夹移动或复制到它自身中".to_string());
+        }
+        transfers.push((source, target));
+    }
+    Ok(transfers)
+}
+
+#[tauri::command]
+pub async fn project_copy(
+    root: String,
+    paths: Vec<String>,
+    destination: String,
+) -> Result<ProjectBatchResult, String> {
+    let root_path = project_root(&root)?;
+    let transfers = prepare_project_transfer(&root, &paths, &destination)?;
+    let mut result = ProjectBatchResult {
+        completed: Vec::new(),
+        failed: Vec::new(),
+    };
+    for (source, target) in transfers {
+        let from = source
+            .strip_prefix(&root_path)
+            .unwrap_or(&source)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let to = target
+            .strip_prefix(&root_path)
+            .unwrap_or(&target)
+            .to_string_lossy()
+            .replace('\\', "/");
+        match copy_recursively(&source, &target) {
+            Ok(()) => result.completed.push(ProjectPathChange { from, to }),
+            Err(error) => result
+                .failed
+                .push(ProjectOperationFailure { path: from, error }),
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn project_move(
+    root: String,
+    paths: Vec<String>,
+    destination: String,
+) -> Result<ProjectBatchResult, String> {
+    let root_path = project_root(&root)?;
+    let transfers = prepare_project_transfer(&root, &paths, &destination)?;
+    let mut result = ProjectBatchResult {
+        completed: Vec::new(),
+        failed: Vec::new(),
+    };
+    for (source, target) in transfers {
+        let from = source
+            .strip_prefix(&root_path)
+            .unwrap_or(&source)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let to = target
+            .strip_prefix(&root_path)
+            .unwrap_or(&target)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let operation = if fs::rename(&source, &target).is_err() {
+            copy_recursively(&source, &target).and_then(|_| {
+                if source.is_dir() {
+                    fs::remove_dir_all(&source).map_err(|error| error.to_string())
+                } else {
+                    fs::remove_file(&source).map_err(|error| error.to_string())
+                }
+            })
+        } else {
+            Ok(())
+        };
+        match operation {
+            Ok(()) => result.completed.push(ProjectPathChange { from, to }),
+            Err(error) => result
+                .failed
+                .push(ProjectOperationFailure { path: from, error }),
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn project_batch_start(
+    app: AppHandle,
+    state: tauri::State<'_, ProjectBatchManager>,
+    operation: String,
+    root: String,
+    paths: Vec<String>,
+    destination: Option<String>,
+    confirmed: bool,
+) -> Result<String, String> {
+    let operation = operation.trim().to_lowercase();
+    if !matches!(operation.as_str(), "copy" | "move" | "delete") {
+        return Err("不支持的项目批量操作".to_string());
+    }
+    if paths.is_empty() {
+        return Err("请选择至少一个文件或文件夹".to_string());
+    }
+    if operation == "delete" && !confirmed {
+        return Err("删除项目文件需要明确确认".to_string());
+    }
+
+    let manager = state.inner().clone();
+    let app_for_worker = app.clone();
+    if operation == "delete" {
+        let preview = project_delete_preview(root.clone(), paths).await?;
+        if preview.paths.is_empty() {
+            return Err("请选择要删除的文件或文件夹".to_string());
+        }
+        let handle = manager.start(
+            &app,
+            operation,
+            root.clone(),
+            preview.paths.len() as u64,
+            preview.paths.clone(),
+            None,
+        );
+        let id = handle.id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            run_batch_delete(manager, app_for_worker, id, root, preview.paths)
+        });
+        return Ok(handle.id);
+    }
+
+    let destination = destination.ok_or_else(|| "复制或移动需要目标文件夹".to_string())?;
+    let root_path = project_root(&root)?;
+    let transfers = prepare_project_transfer(&root, &paths, &destination)?;
+    let entries = transfers
+        .into_iter()
+        .map(|(source, target)| {
+            let label = source
+                .strip_prefix(&root_path)
+                .unwrap_or(&source)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let target_label = target
+                .strip_prefix(&root_path)
+                .unwrap_or(&target)
+                .to_string_lossy()
+                .replace('\\', "/");
+            (source, target, label, target_label)
+        })
+        .collect::<Vec<_>>();
+    let handle = manager.start(
+        &app,
+        operation.clone(),
+        root.clone(),
+        entries.len() as u64,
+        paths,
+        Some(destination),
+    );
+    let id = handle.id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        run_batch_copy_move(manager, app_for_worker, id, operation, entries)
+    });
+    Ok(handle.id)
+}
+
+#[tauri::command]
+pub async fn project_batch_cancel(
+    app: AppHandle,
+    state: tauri::State<'_, ProjectBatchManager>,
+    id: String,
+) -> Result<(), String> {
+    state.cancel(&app, &id)
+}
+
+#[tauri::command]
+pub async fn project_batch_list(
+    state: tauri::State<'_, ProjectBatchManager>,
+    root: Option<String>,
+) -> Result<Vec<ProjectBatchJob>, String> {
+    Ok(state.list(root.as_deref()))
+}
+
+fn run_batch_copy_move(
+    manager: ProjectBatchManager,
+    app: AppHandle,
+    id: String,
+    operation: String,
+    entries: Vec<(PathBuf, PathBuf, String, String)>,
+) {
+    manager.update(&app, &id, |snapshot| snapshot.status = "running".into());
+    for (index, (source, target, label, target_label)) in entries.iter().enumerate() {
+        if manager.is_cancelled(&id) {
+            let remaining = (entries.len() - index) as u64;
+            manager.update(&app, &id, |snapshot| {
+                snapshot.skipped += remaining;
+            });
+            manager.finish(&app, &id, "cancelled", None);
+            return;
+        }
+        manager.update(&app, &id, |snapshot| {
+            snapshot.current_path = Some(label.clone())
+        });
+        let result = if operation == "copy" {
+            copy_recursively(source, target)
+        } else if fs::rename(source, target).is_err() {
+            copy_recursively(source, target).and_then(|_| {
+                if source.is_dir() {
+                    fs::remove_dir_all(source).map_err(|error| error.to_string())
+                } else {
+                    fs::remove_file(source).map_err(|error| error.to_string())
+                }
+            })
+        } else {
+            Ok(())
+        };
+        match result {
+            Ok(()) => manager.update(&app, &id, |snapshot| {
+                snapshot.completed += 1;
+                if operation == "move" {
+                    snapshot
+                        .changes
+                        .push(crate::session::project_batch::ProjectBatchChange {
+                            from: label.clone(),
+                            to: Some(target_label.clone()),
+                        });
+                }
+            }),
+            Err(error) => manager.update(&app, &id, |snapshot| {
+                snapshot.failed += 1;
+                snapshot
+                    .failures
+                    .push(crate::session::project_batch::ProjectBatchFailure {
+                        path: label.clone(),
+                        error,
+                    });
+            }),
+        }
+    }
+    let final_job = manager.list(None).into_iter().find(|job| job.id == id);
+    let status = final_job
+        .map(|job| {
+            if job.failed == 0 {
+                "succeeded"
+            } else if job.completed > 0 {
+                "partial"
+            } else {
+                "failed"
+            }
+        })
+        .unwrap_or("failed");
+    manager.finish(&app, &id, status, None);
+}
+
+fn run_batch_delete(
+    manager: ProjectBatchManager,
+    app: AppHandle,
+    id: String,
+    root: String,
+    paths: Vec<String>,
+) {
+    manager.update(&app, &id, |snapshot| snapshot.status = "running".into());
+    for (index, path) in paths.iter().enumerate() {
+        if manager.is_cancelled(&id) {
+            manager.update(&app, &id, |snapshot| {
+                snapshot.skipped += (paths.len() - index) as u64
+            });
+            manager.finish(&app, &id, "cancelled", None);
+            return;
+        }
+        manager.update(&app, &id, |snapshot| {
+            snapshot.current_path = Some(path.clone())
+        });
+        let result = non_root_project_path(&root, path).and_then(|absolute| {
+            if absolute.is_dir() {
+                fs::remove_dir_all(absolute).map_err(|error| error.to_string())
+            } else {
+                fs::remove_file(absolute).map_err(|error| error.to_string())
+            }
+        });
+        match result {
+            Ok(()) => manager.update(&app, &id, |snapshot| {
+                snapshot.completed += 1;
+                snapshot
+                    .changes
+                    .push(crate::session::project_batch::ProjectBatchChange {
+                        from: path.clone(),
+                        to: None,
+                    });
+            }),
+            Err(error) => manager.update(&app, &id, |snapshot| {
+                snapshot.failed += 1;
+                snapshot
+                    .failures
+                    .push(crate::session::project_batch::ProjectBatchFailure {
+                        path: path.clone(),
+                        error,
+                    });
+            }),
+        }
+    }
+    let final_job = manager.list(None).into_iter().find(|job| job.id == id);
+    let status = final_job
+        .map(|job| {
+            if job.failed == 0 {
+                "succeeded"
+            } else if job.completed > 0 {
+                "partial"
+            } else {
+                "failed"
+            }
+        })
+        .unwrap_or("failed");
+    manager.finish(&app, &id, status, None);
+}
+
+#[tauri::command]
+pub async fn project_delete_preview(
+    root: String,
+    paths: Vec<String>,
+) -> Result<ProjectDeletePreview, String> {
+    let mut preview = ProjectDeletePreview {
+        files: 0,
+        directories: 0,
+        paths: Vec::new(),
+    };
+    let mut paths = paths;
+    paths.sort_by_key(|path| path.matches('/').count());
+    for path in paths {
+        if preview
+            .paths
+            .iter()
+            .any(|parent| path == *parent || Path::new(&path).starts_with(parent))
+        {
+            continue;
+        }
+        let absolute = non_root_project_path(&root, &path)?;
+        count_delete_target(&absolute, &mut preview)?;
+        preview.paths.push(path);
+    }
+    Ok(preview)
+}
+
+#[tauri::command]
+pub async fn project_delete_entries(
+    root: String,
+    paths: Vec<String>,
+    confirmed: bool,
+) -> Result<Vec<String>, String> {
+    if !confirmed {
+        return Err("删除项目文件需要明确确认".to_string());
+    }
+    // 完整预检，避免删除一部分后才发现另一路径无效。
+    let preview = project_delete_preview(root.clone(), paths.clone()).await?;
+    if preview.paths.is_empty() {
+        return Err("请选择要删除的文件或文件夹".to_string());
+    }
+    let deleted = preview.paths.clone();
+    for path in preview.paths {
+        let absolute = non_root_project_path(&root, &path)?;
+        if absolute.is_dir() {
+            fs::remove_dir_all(absolute).map_err(|e| e.to_string())?;
+        } else {
+            fs::remove_file(absolute).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(deleted)
+}
+
+#[tauri::command]
+pub async fn project_watch_start(
+    app: AppHandle,
+    state: tauri::State<'_, ProjectWatchManager>,
+    root: String,
+    paths: Vec<String>,
+    watch_id: Option<u64>,
+) -> Result<(), String> {
+    let root_path = project_root(&root)?;
+    for path in &paths {
+        let _ = non_root_project_path(&root, path)?;
+    }
+    state.start(app, root_path, root, paths, watch_id.unwrap_or_default());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn project_watch_stop(
+    state: tauri::State<'_, ProjectWatchManager>,
+    root: String,
+    watch_id: Option<u64>,
+) -> Result<(), String> {
+    state.stop(&project_root(&root)?, watch_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn project_task_start(
+    app: AppHandle,
+    state: tauri::State<'_, TaskRunner>,
+    root: String,
+    task_id: String,
+    label: String,
+    command: String,
+) -> Result<crate::session::task_runner::ProjectTaskSnapshot, String> {
+    state.start(app, project_root(&root)?, task_id, label, command)
+}
+
+#[tauri::command]
+pub async fn project_task_list(
+    state: tauri::State<'_, TaskRunner>,
+    root: String,
+) -> Result<Vec<crate::session::task_runner::ProjectTaskSnapshot>, String> {
+    Ok(state.list(&project_root(&root)?.to_string_lossy()))
+}
+
+#[tauri::command]
+pub async fn project_task_cancel(
+    app: AppHandle,
+    state: tauri::State<'_, TaskRunner>,
+    id: String,
+) -> Result<(), String> {
+    state.cancel(&app, &id)
 }
 
 // ==============================  本地 Git  ================================
@@ -1456,6 +2757,20 @@ async fn exec_local_git(repo_path: &str, git_args: &str) -> Result<String, Strin
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn exec_local_git_args(repo_path: &str, args: &[&str]) -> Result<String, String> {
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("git exec failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
@@ -1481,7 +2796,7 @@ pub async fn local_git_diff(
     repo_path: String,
     file: String,
 ) -> Result<git_ops::GitDiffResult, String> {
-    let output = exec_local_git(&repo_path, &format!("diff -- {file}")).await?;
+    let output = exec_local_git_args(&repo_path, &["diff", "--", &file]).await?;
     Ok(git_ops::GitDiffResult {
         path: file,
         diff: output,
@@ -1502,4 +2817,99 @@ pub async fn local_git_branches(repo_path: String) -> Result<Vec<git_ops::GitBra
 pub async fn local_git_checkout(repo_path: String, branch: String) -> Result<(), String> {
     exec_local_git(&repo_path, &format!("checkout {branch}")).await?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn local_git_add(repo_path: String, path: String) -> Result<(), String> {
+    exec_local_git_args(&repo_path, &["add", "--", &path]).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn local_git_unstage(repo_path: String, path: String) -> Result<(), String> {
+    exec_local_git_args(&repo_path, &["restore", "--staged", "--", &path]).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn local_git_commit(repo_path: String, message: String) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("提交信息不能为空".to_string());
+    }
+    exec_local_git_args(&repo_path, &["commit", "-m", message.trim()]).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn local_git_push(repo_path: String) -> Result<(), String> {
+    exec_local_git_args(&repo_path, &["push"]).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn local_git_pull(repo_path: String) -> Result<(), String> {
+    exec_local_git_args(&repo_path, &["pull", "--ff-only"]).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod project_file_tests {
+    use super::{
+        count_delete_target, prepare_project_transfer, project_list_dir, resolve_project_path,
+        ProjectDeletePreview,
+    };
+
+    #[test]
+    fn project_file_access_cannot_escape_root() {
+        let root =
+            std::env::temp_dir().join(format!("simpl-ssh-project-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        assert!(resolve_project_path(root.to_str().unwrap(), "src/main.rs").is_ok());
+        assert!(resolve_project_path(root.to_str().unwrap(), "../outside.txt").is_err());
+        assert!(resolve_project_path(root.to_str().unwrap(), "/etc/passwd").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_transfer_rejects_existing_target_and_nested_destination() {
+        let root =
+            std::env::temp_dir().join(format!("simpl-ssh-project-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/child")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        assert!(prepare_project_transfer(
+            root.to_str().unwrap(),
+            &["src".to_string()],
+            "src/child"
+        )
+        .is_err());
+        assert!(
+            prepare_project_transfer(root.to_str().unwrap(), &["src/main.rs".to_string()], "")
+                .is_ok()
+        );
+        std::fs::write(root.join("src/main.rs.copy"), "x").unwrap();
+        let mut preview = ProjectDeletePreview {
+            files: 0,
+            directories: 0,
+            paths: vec![],
+        };
+        count_delete_target(&root.join("src"), &mut preview).unwrap();
+        assert_eq!((preview.files, preview.directories), (2, 2));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_list_dir_returns_for_registered_project_path() {
+        let root = std::env::temp_dir().join(format!(
+            "simpl-ssh-project-list-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("README.md"), "# test\n").unwrap();
+        let entries = project_list_dir(root.to_string_lossy().to_string(), String::new(), None)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

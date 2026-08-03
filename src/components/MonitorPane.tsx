@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { MonitorSnapshot } from "../types";
+import { ErrorState, LoadingState } from "./LoadingState";
+import { useActivity } from "../activity/ActivityProvider";
 
 type Props = {
   sessionId: string;
+  /** 隐藏标签及未打开的抽屉不继续采样远端。 */
+  active?: boolean;
+  compact?: boolean;
 };
 
 /** 格式化字节为人类可读单位 */
@@ -54,28 +59,50 @@ function MetricBar({
  * 系统监控面板：轮询远程 Linux /proc 指标（CPU/内存/负载/磁盘）。
  * 复用已有 SSH 会话，不额外建连。
  */
-export function MonitorPane({ sessionId }: Props) {
+export function MonitorPane({ sessionId, active = true, compact = false }: Props) {
   const [snap, setSnap] = useState<MonitorSnapshot | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const requestRef = useRef(0);
+  const inFlightRef = useRef(false);
+  const sessionRef = useRef(sessionId);
+  sessionRef.current = sessionId;
+  const { add: addActivity } = useActivity();
 
   const refresh = useCallback(async () => {
+    if (inFlightRef.current) return;
+    const requestId = ++requestRef.current;
+    const requestedSession = sessionId;
+    inFlightRef.current = true;
+    setLoading(true);
     try {
       const data = await invoke<MonitorSnapshot>("monitor_snapshot", {
-        sessionId,
+        sessionId: requestedSession,
       });
+      if (requestId !== requestRef.current || sessionRef.current !== requestedSession) return;
       setSnap(data);
       setError("");
       setLastUpdated(Date.now());
     } catch (e) {
-      setError(String(e));
+      if (requestId === requestRef.current && sessionRef.current === requestedSession) {
+        const message = String(e);
+        setError(message);
+        addActivity({ id: `monitor:${requestedSession}:${message}`, kind: "connection", severity: "error", title: "监控刷新失败", detail: message, referenceId: requestedSession });
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current && sessionRef.current === requestedSession) setLoading(false);
+      inFlightRef.current = false;
     }
-  }, [sessionId]);
+  }, [addActivity, sessionId]);
 
   useEffect(() => {
+    requestRef.current += 1;
+    setSnap(null);
+    setError("");
+    setLoading(true);
+    setLastUpdated(null);
+    if (!active) return;
     let cancelled = false;
     const tick = async () => {
       if (cancelled) return;
@@ -86,8 +113,9 @@ export function MonitorPane({ sessionId }: Props) {
     return () => {
       cancelled = true;
       clearInterval(id);
+      requestRef.current += 1;
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   const memPct =
     snap && snap.mem_total_bytes > 0
@@ -95,7 +123,7 @@ export function MonitorPane({ sessionId }: Props) {
       : 0;
 
   return (
-    <div className="monitor-pane">
+    <div className={`monitor-pane ${compact ? "compact" : ""}`}>
       <div className="monitor-head">
         <div className="monitor-title">
           <Activity size={16} /> 系统监控
@@ -110,13 +138,11 @@ export function MonitorPane({ sessionId }: Props) {
       </div>
 
       {loading && !snap && !error && (
-        <div className="monitor-loading">
-          <div className="conn-spinner" />
-          <span>正在采集指标…</span>
-        </div>
+        <LoadingState compact label="正在采集指标…" />
       )}
 
-      {error && <div className="monitor-error">{error}</div>}
+      {error && !snap && <ErrorState label="无法采集监控指标" message={error} onRetry={() => void refresh()} />}
+      {error && snap && <div className="monitor-error">刷新失败：{error}<button type="button" onClick={() => void refresh()}>重试</button></div>}
 
       {snap && (
         <div className="monitor-grid">

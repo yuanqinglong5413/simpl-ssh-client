@@ -74,6 +74,8 @@
 > | 或 `APPLE_API_ISSUER` + `APPLE_API_KEY` + `APPLE_API_PRIVATE_KEY` | App Store Connect API 公证 |
 > | `TAURI_SIGNING_PRIVATE_KEY` | 自动更新包签名私钥（与 `tauri.conf.json` 公钥配对） |
 
+托管 LSP 运行时使用独立的 Ed25519 信任链；发布目录、平台运行时和签名密钥的维护步骤见 [托管 LSP 运行时发布说明](docs/managed-lsp-runtimes.md)。
+
 ## 🛠 从源码构建
 
 **前置要求**：[Node.js](https://nodejs.org/) ≥ 22（pnpm 11 需要）、[pnpm](https://pnpm.io/) 11、[Rust](https://www.rust-lang.org/) (stable)。
@@ -83,11 +85,17 @@ git clone https://github.com/yuanqinglong5413/simpl-ssh-client.git
 cd simpl-ssh-client
 pnpm install
 
-# 开发模式（热重载）
-pnpm tauri dev
+# 开发模式（热重载，使用独立 Bundle ID，可与正式版并存）
+pnpm tauri:dev
 
-# 打包当前平台的安装包
-pnpm tauri build
+# 质量检查（前端测试/构建、Rust 测试、Clippy、差异检查）
+pnpm check
+
+# 本机桌面启动冒烟：真正打开一次开发窗口后自动关闭
+pnpm smoke:desktop
+
+# 打包正式版（需要配置 TAURI_SIGNING_PRIVATE_KEY 才会生成更新包）
+pnpm tauri:build
 ```
 
 Linux 还需要系统依赖：
@@ -159,7 +167,7 @@ simpl-ssh-client/
 - **首次连接**走 TOFU——弹窗显示算法与 `SHA256:...` 指纹，请通过可靠渠道（服务器控制台、`ssh-keyscan` 等）核对后再信任，这是防中间人攻击的关键。
 - **公钥变更**会被拦截并警示（疑似中间人攻击），需你显式确认后才替换记录。
 
-仍需注意：TOFU 的安全性取决于你首次连接时是否认真核对了指纹；暂未提供「已知主机」可视化管理界面（可用 `ssh-keygen -R "[host]:port"` 或后端命令删除条目）。
+仍需注意：TOFU 的安全性取决于你首次连接时是否认真核对了指纹。可在 **设置 → 安全 → 已知主机管理** 查看指纹并删除本机已记录的条目。
 
 ## 🤝 参与贡献
 

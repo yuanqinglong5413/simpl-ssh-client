@@ -16,6 +16,15 @@ export function useUpdater() {
   });
 
   const checkForUpdates = useCallback(async (silent = false) => {
+    // 开发窗口使用独立 Bundle ID，不能也不应查询正式 Release 更新；否则每次
+    // 启动都会在后端留下一个无意义的 updater 错误。
+    if (import.meta.env.DEV) {
+      setState({
+        checking: false,
+        message: silent ? "" : "开发环境不检查正式版更新",
+      });
+      return;
+    }
     setState({ checking: true, message: "正在检查更新…" });
     try {
       const update = await check();

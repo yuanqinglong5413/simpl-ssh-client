@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, ChevronUp, Plus, X } from "lucide-react";
-import type { ForwardEntry, ForwardKind, SessionInfo } from "../types";
+import { Plus, X } from "lucide-react";
+import type { ConnectionEnvironment, ForwardEntry, ForwardKind, SessionInfo } from "../types";
+import { useActivity } from "../activity/ActivityProvider";
 
 const KINDS: { value: ForwardKind; label: string }[] = [
   { value: "local", label: "-L 本地" },
@@ -13,8 +14,21 @@ const KINDS: { value: ForwardKind; label: string }[] = [
  * 端口转发面板（全局，浮动按钮 + 底部抽屉）：跨会话管理 -L/-R/-D 转发。
  * 添加表单选会话 + 类型 + 本地/远程参数；列表显示每条转发与状态，可停止。
  */
-export function ForwardPanel() {
-  const [open, setOpen] = useState(false);
+type Props = {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  embedded?: boolean;
+  environments?: Record<string, ConnectionEnvironment | null | undefined>;
+};
+
+export function ForwardPanel({ open: controlledOpen, onOpenChange, embedded = false, environments = {} }: Props) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean | ((previous: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(open) : next;
+    if (controlledOpen === undefined) setInternalOpen(value);
+    onOpenChange?.(value);
+  };
   const [forwards, setForwards] = useState<ForwardEntry[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [sessionId, setSessionId] = useState("");
@@ -24,20 +38,38 @@ export function ForwardPanel() {
   const [remoteHost, setRemoteHost] = useState("");
   const [remotePort, setRemotePort] = useState(80);
   const [error, setError] = useState("");
+  const [productionPhrase, setProductionPhrase] = useState("");
+  const requestRef = useRef(0);
+  const inFlightRef = useRef(false);
+  const { add: addActivity } = useActivity();
+
+  const refresh = useCallback(async () => {
+    if (inFlightRef.current) return;
+    const requestId = ++requestRef.current;
+    inFlightRef.current = true;
+    try {
+      const [nextForwards, nextSessions] = await Promise.all([
+        invoke<ForwardEntry[]>("forward_list"),
+        invoke<SessionInfo[]>("ssh_list_sessions"),
+      ]);
+      if (requestId !== requestRef.current) return;
+      setForwards(nextForwards);
+      setSessions(nextSessions);
+      setError("");
+    } catch (reason) {
+      if (requestId === requestRef.current) { const message = String(reason); setError(`转发状态刷新失败：${message}`); addActivity({ id: `forward:refresh:${message}`, kind: "connection", severity: "error", title: "端口转发刷新失败", detail: message }); }
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, [addActivity]);
 
   useEffect(() => {
-    const refresh = () => {
-      invoke<ForwardEntry[]>("forward_list")
-        .then(setForwards)
-        .catch(() => {});
-      invoke<SessionInfo[]>("ssh_list_sessions")
-        .then(setSessions)
-        .catch(() => {});
-    };
-    refresh();
-    const iv = setInterval(refresh, 1000);
-    return () => clearInterval(iv);
-  }, []);
+    requestRef.current += 1;
+    if (!open) return;
+    void refresh();
+    const iv = setInterval(() => void refresh(), 2500);
+    return () => { clearInterval(iv); requestRef.current += 1; };
+  }, [open, refresh]);
 
   useEffect(() => {
     if (!sessionId && sessions.length > 0) setSessionId(sessions[0].id);
@@ -45,6 +77,10 @@ export function ForwardPanel() {
 
   async function add() {
     setError("");
+    if (environments[sessionId] === "production" && productionPhrase.trim() !== "生产") {
+      setError("生产环境端口转发需要输入“生产”确认。");
+      return;
+    }
     try {
       await invoke("forward_add", {
         sessionId,
@@ -54,16 +90,18 @@ export function ForwardPanel() {
         remoteHost: kind === "dynamic" ? null : remoteHost || null,
         remotePort: kind === "dynamic" ? null : remotePort,
       });
+      await refresh();
     } catch (e) {
-      setError(String(e));
+      const message = String(e); setError(message); addActivity({ id: `forward:add:${message}`, kind: "connection", severity: "error", title: "端口转发启动失败", detail: message, referenceId: sessionId });
     }
   }
 
   async function remove(id: string) {
     try {
       await invoke("forward_remove", { id });
-    } catch {
-      /* ignore */
+      await refresh();
+    } catch (reason) {
+      const message = String(reason); setError(`停止转发失败：${message}`); addActivity({ id: `forward:remove:${id}:${message}`, kind: "connection", severity: "error", title: "端口转发停止失败", detail: message, referenceId: id });
     }
   }
 
@@ -71,15 +109,11 @@ export function ForwardPanel() {
 
   return (
     <>
-      <button className="forward-fab" onClick={() => setOpen((o) => !o)}>
-        转发{forwards.length > 0 ? ` (${forwards.length})` : ""}
-        {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-      </button>
       {open && (
-        <div className="forward-panel">
+        <div className={`forward-panel ${embedded ? "embedded" : ""}`}>
           <div className="forward-head">
             <span>端口转发（{forwards.length}）</span>
-            <button className="icon-btn" onClick={() => setOpen(false)}>
+            <button className="icon-btn" aria-label="关闭端口转发" onClick={() => setOpen(false)}>
               <X size={14} />
             </button>
           </div>
@@ -144,6 +178,7 @@ export function ForwardPanel() {
               <Plus size={14} /> 添加
             </button>
           </div>
+          {environments[sessionId] === "production" && <label className="field forward-production-confirm">当前会话为生产环境。输入“生产”以创建端口转发<input value={productionPhrase} onChange={(event) => setProductionPhrase(event.target.value)} placeholder="生产" /></label>}
           {error && <div className="forward-error">{error}</div>}
           <div className="forward-list">
             {forwards.length === 0 ? (

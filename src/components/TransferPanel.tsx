@@ -1,17 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, ChevronUp, Pause, Play, RotateCw, Trash2, X } from "lucide-react";
+import { Pause, Play, RotateCw, Trash2, X } from "lucide-react";
 import type { TransferKind, TransferStatus, TransferTask } from "../types";
+import { useTasks } from "../tasks/TaskProvider";
+import { useToast } from "../feedback/ToastProvider";
 
 /**
  * 全局传输队列面板：底部抽屉，列出所有 SFTP 传输任务（排队/进行/完成/失败/取消），
  * 进行中可取消。状态来自后端 `transfer://state` 事件 + 轮询 `transfer_list`，
  * 进度来自 `transfer://progress`（按 task_id 更新）。
  */
-export function TransferPanel() {
-  const [open, setOpen] = useState(false);
-  const [tasks, setTasks] = useState<TransferTask[]>([]);
+type Props = {
+  /** 受控状态让当前会话操作条也能打开任务抽屉。 */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** 在统一任务抽屉中渲染，而不是旧的底部浮层。 */
+  embedded?: boolean;
+};
+
+export function TransferPanel({ open: controlledOpen, onOpenChange, embedded = false }: Props) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean | ((previous: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(open) : next;
+    if (controlledOpen === undefined) setInternalOpen(value);
+    onOpenChange?.(value);
+  };
+  const { tasks, error: taskError, cancel, pause, resume, retry, clearDone } = useTasks();
+  const { toast } = useToast();
   const [speedMap, setSpeedMap] = useState<Record<string, number>>({});
   const [concurrency, setConcurrency] = useState(2);
   const speedRef = useRef<
@@ -19,18 +36,7 @@ export function TransferPanel() {
   >({});
 
   useEffect(() => {
-    let un1: (() => void) | undefined;
     let un2: (() => void) | undefined;
-    const refresh = () => {
-      invoke<TransferTask[]>("transfer_list")
-        .then(setTasks)
-        .catch(() => {});
-    };
-    refresh();
-    const iv = setInterval(refresh, 1500);
-    listen<TransferTask>("transfer://state", (e) => {
-      setTasks((prev) => upsert(prev, e.payload));
-    }).then((fn) => (un1 = fn));
     listen<{ task_id: string; transferred: number; total: number }>(
       "transfer://progress",
       (e) => {
@@ -53,22 +59,9 @@ export function TransferPanel() {
         speedRef.current[e.payload.task_id] = s;
         const ema = s.ema;
         setSpeedMap((m) => ({ ...m, [e.payload.task_id]: ema }));
-        setTasks((prev) =>
-          prev.map((t) =>
-            t.id === e.payload.task_id
-              ? {
-                  ...t,
-                  transferred: e.payload.transferred,
-                  total: e.payload.total,
-                }
-              : t
-          )
-        );
       }
     ).then((fn) => (un2 = fn));
     return () => {
-      clearInterval(iv);
-      un1?.();
       un2?.();
     };
   }, []);
@@ -76,44 +69,8 @@ export function TransferPanel() {
   const active = tasks.filter(
     (t) => t.status === "queued" || t.status === "running"
   ).length;
+  const failed = tasks.filter((t) => t.status === "failed").length;
 
-  async function cancel(id: string) {
-    try {
-      await invoke("transfer_cancel", { id });
-    } catch {
-      /* ignore */
-    }
-  }
-  async function pause(id: string) {
-    try {
-      await invoke("transfer_pause", { id });
-    } catch {
-      /* ignore */
-    }
-  }
-  async function resume(id: string) {
-    try {
-      await invoke("transfer_resume", { id });
-    } catch {
-      /* ignore */
-    }
-  }
-  async function retry(id: string) {
-    try {
-      await invoke("transfer_retry", { id });
-    } catch {
-      /* ignore */
-    }
-  }
-  async function clearDone() {
-    try {
-      await invoke("transfer_clear_done");
-      // 后端清理后，下一次 state 事件/轮询会同步；主动刷新一次
-      invoke<TransferTask[]>("transfer_list").then(setTasks).catch(() => {});
-    } catch {
-      /* ignore */
-    }
-  }
   async function setConc(n: number) {
     const v = Math.max(1, Math.min(8, n));
     try {
@@ -124,19 +81,15 @@ export function TransferPanel() {
     }
   }
 
-  // 无任务且未展开：不显示入口，避免常驻按钮
+  // 无任务且未展开时不渲染；入口位于会话操作条、状态栏和命令面板。
   if (tasks.length === 0 && !open) return null;
 
   return (
     <>
-      <button className="transfer-fab" onClick={() => setOpen((o) => !o)}>
-        传输{active > 0 ? ` (${active})` : ""}
-        {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-      </button>
       {open && (
-        <div className="transfer-panel">
+        <div className={`transfer-panel ${embedded ? "embedded" : ""}`}>
           <div className="transfer-head">
-            <span>传输队列（{tasks.length}）</span>
+            <span>传输队列（{tasks.length}{active > 0 ? ` · ${active} 进行中` : ""}{failed > 0 ? ` · ${failed} 失败` : ""}）</span>
             <label className="transfer-concurrency" title="并发传输数（1-8）">
               并发
               <input
@@ -147,13 +100,14 @@ export function TransferPanel() {
                 onChange={(e) => setConc(Number(e.target.value) || 1)}
               />
             </label>
-            <button className="icon-btn" title="清空已完成" onClick={() => clearDone()}>
+            <button className="icon-btn" title="清空已完成" aria-label="清空已完成的传输" onClick={() => void clearDone().catch((reason) => toast(`清理传输记录失败：${String(reason)}`, "error"))}>
               <Trash2 size={14} />
             </button>
-            <button className="icon-btn" onClick={() => setOpen(false)}>
+            <button className="icon-btn" aria-label="关闭传输队列" onClick={() => setOpen(false)}>
               <X size={14} />
             </button>
           </div>
+          {taskError && <div className="transfer-error-banner" role="alert">{taskError}</div>}
           <div className="transfer-list">
             {tasks.length === 0 ? (
               <div className="transfer-empty">暂无传输任务</div>
@@ -176,6 +130,9 @@ export function TransferPanel() {
                         {statusLabel(t.status)}
                       </span>
                     </div>
+                    <div className="transfer-paths" title={`本地：${t.local_path}\n远程：${t.remote_path}`}>
+                      <span>本地：{t.local_path}</span><span>远程：{t.remote_path}</span>
+                    </div>
                     {live ? (
                       <>
                         <div className="bar">
@@ -196,7 +153,7 @@ export function TransferPanel() {
                           <button
                             className="icon-btn"
                             title="暂停"
-                            onClick={() => pause(t.id)}
+                            onClick={() => void pause(t.id).catch((reason) => toast(`暂停传输失败：${String(reason)}`, "error"))}
                           >
                             <Pause size={13} />
                           </button>
@@ -205,7 +162,7 @@ export function TransferPanel() {
                           <button
                             className="icon-btn"
                             title="继续"
-                            onClick={() => resume(t.id)}
+                            onClick={() => void resume(t.id).catch((reason) => toast(`继续传输失败：${String(reason)}`, "error"))}
                           >
                             <Play size={13} />
                           </button>
@@ -213,7 +170,7 @@ export function TransferPanel() {
                         <button
                           className="icon-btn danger"
                           title="取消"
-                          onClick={() => cancel(t.id)}
+                          onClick={() => void cancel(t.id).catch((reason) => toast(`取消传输失败：${String(reason)}`, "error"))}
                         >
                           <X size={13} />
                         </button>
@@ -226,7 +183,7 @@ export function TransferPanel() {
                         <button
                           className="icon-btn"
                           title="重试"
-                          onClick={() => retry(t.id)}
+                          onClick={() => void retry(t.id).catch((reason) => toast(`重试传输失败：${String(reason)}`, "error"))}
                         >
                           <RotateCw size={13} />
                         </button>
@@ -241,16 +198,6 @@ export function TransferPanel() {
       )}
     </>
   );
-}
-
-function upsert(list: TransferTask[], t: TransferTask): TransferTask[] {
-  const i = list.findIndex((x) => x.id === t.id);
-  if (i >= 0) {
-    const next = [...list];
-    next[i] = t;
-    return next;
-  }
-  return [...list, t];
 }
 
 function pct(t: TransferTask): number {
