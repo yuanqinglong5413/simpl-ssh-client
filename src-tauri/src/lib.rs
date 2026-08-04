@@ -4,7 +4,7 @@
 //! - `commands`   暴露给前端的 Tauri 命令（薄封装）
 //! - `session`    SSH 连接 / 会话管理（russh）+ PTY/WS 终端传输
 //! - `sftp`       文件传输（russh-sftp，复用 session 连接）
-//! - `profile`    连接配置 + 凭据加密存储（钥匙串 + AES-256-GCM 内存缓存）
+//! - `profile`    连接配置 + SQLite AES-256-GCM 应用凭据仓库
 
 mod commands;
 mod session;
@@ -80,9 +80,6 @@ pub fn run() {
         let _ = database.record_warning(&format!(
             "项目分组兼容迁移未完成，可在下次启动重试：{error}"
         ));
-    }
-    if let Err(error) = profiles.retry_secret_cleanup() {
-        let _ = database.record_warning(&format!("钥匙串清理队列重试失败：{error}"));
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -211,6 +208,8 @@ pub fn run() {
             commands::forward_list,
             commands::forward_remove,
             commands::profile_list,
+            commands::credential_migration_status,
+            commands::credential_migration_run,
             commands::profile_save,
             commands::profile_update,
             commands::profile_delete,

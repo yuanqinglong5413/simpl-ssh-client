@@ -171,7 +171,7 @@ export function SettingsDialog({ open, onClose, onOpenLspCatalog }: Props) {
                   storageMessage={storageMessage}
                   onBackupStorage={async () => { try { const path = await invoke<string>("storage_backup"); setStorageMessage(`数据库备份已创建：${path}`); } catch (error) { setStorageMessage(`备份失败：${String(error)}`); } }}
                   onCopyStorageDiagnostic={async () => { try { const status = await invoke("storage_status"); await navigator.clipboard.writeText(JSON.stringify(status, null, 2)); setStorageMessage("存储诊断已复制，不包含凭据或项目文件内容。"); } catch (error) { setStorageMessage(`复制诊断失败：${String(error)}`); } }}
-                  onRetrySecretCleanup={async () => { try { const remaining = await invoke<number>("storage_retry_secret_cleanup"); setStorageMessage(remaining === 0 ? "钥匙串清理队列已处理完成。" : `仍有 ${remaining} 项钥匙串凭据无法删除，可稍后重试。`); } catch (error) { setStorageMessage(`重试凭据清理失败：${String(error)}`); } }}
+                  onRetrySecretCleanup={async () => { try { const report = await invoke<{ migrated: number; skipped: number; failures: Array<{ profileName: string; reason: string }> }>("credential_migration_run"); setStorageMessage(report.failures.length ? `已导入 ${report.migrated} 项，仍有 ${report.failures.length} 项失败：${report.failures.map((item) => item.profileName).join("、")}` : `旧凭据导入完成：${report.migrated} 项，跳过 ${report.skipped} 项。`); } catch (error) { setStorageMessage(`导入旧凭据失败：${String(error)}`); } }}
                   onCheckUpdates={() => checkForUpdates(false)}
                   agentName={agentName}
                   agentCommand={agentCommand}
@@ -354,7 +354,7 @@ function CategorySettings(props: CategoryViewProps) {
     case "updates": return <>
       <SettingCard title="应用更新" description="从 GitHub Release 检查并安装新版本。"><div className="preference-inline"><Toggle checked={settings.checkUpdatesOnStart} onChange={(checked) => updateSettings({ checkUpdatesOnStart: checked })} label="启动时检查" /><button type="button" className="btn btn-ghost" disabled={props.checking} onClick={props.onCheckUpdates}><RefreshCw size={14} /> {props.checking ? "检查中…" : "立即检查"}</button></div>{props.updateMessage && <p className="preference-status">{props.updateMessage}</p>}</SettingCard>
       <SettingCard title="关于 Simpl SSH" description="轻量级跨平台 SSH、SFTP 与远程开发工作台。"><div className="preference-about"><CircleHelp size={16} /><span>Simpl SSH v{props.appVersion}</span></div></SettingCard>
-      <SettingCard title="本机数据与诊断" description="连接结构和工作区存于 SQLite；凭据仍保存在系统钥匙串。诊断不包含密码、源码或终端输出。"><div className="preference-inline"><button className="btn btn-ghost" onClick={props.onBackupStorage}>创建数据库备份</button><button className="btn btn-ghost" onClick={props.onCopyStorageDiagnostic}>复制存储诊断</button><button className="btn btn-ghost" onClick={props.onRetrySecretCleanup}>重试凭据清理</button></div>{props.storageMessage && <p className="preference-status">{props.storageMessage}</p>}</SettingCard>
+      <SettingCard title="本机数据与诊断" description="连接结构、工作区与 AES-256-GCM 凭据密文存于本机 SQLite；应用仓库不具备系统钥匙串同等隔离强度。诊断不包含密码、源码或终端输出。"><div className="preference-inline"><button className="btn btn-ghost" onClick={props.onBackupStorage}>创建数据库备份</button><button className="btn btn-ghost" onClick={props.onCopyStorageDiagnostic}>复制存储诊断</button><button className="btn btn-ghost" onClick={props.onRetrySecretCleanup}>导入旧钥匙串凭据</button></div>{props.storageMessage && <p className="preference-status">{props.storageMessage}</p>}</SettingCard>
     </>;
   }
 }

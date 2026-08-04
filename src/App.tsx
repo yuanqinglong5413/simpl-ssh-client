@@ -4,7 +4,7 @@ import { BroadcastContext } from "./broadcast";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { sendNotification } from "@tauri-apps/plugin-notification";
-import { ArrowLeft, ArrowRight, MonitorCog, RefreshCw, Search, Sparkles } from "lucide-react";
+import { ArrowLeft, ArrowRight, MonitorCog, RefreshCw, Save, Search, Sparkles } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { WorkspaceActions } from "./components/WorkspaceActions";
 import { ProjectSidebar } from "./components/ProjectSidebar";
@@ -159,6 +159,11 @@ function App() {
   const [showConnect, setShowConnect] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  useEffect(() => {
+    const open = () => setShowCommandPalette(true);
+    window.addEventListener("simpl-ssh:open-command-palette", open);
+    return () => window.removeEventListener("simpl-ssh:open-command-palette", open);
+  }, []);
   const [editProfile, setEditProfile] = useState<ConnectionProfile | null>(null);
   // Part 3: 双模式（SSH / 项目）
   const [mode, setMode] = useState<AppMode>("ssh");
@@ -1032,7 +1037,11 @@ function App() {
       { id: "terminal:redraw", label: "终端：重新绘制", description: "清理当前渲染器缓存并完整刷新", icon: RefreshCw, category: "action" as const, action: () => redrawTerminal(activeTerminalPaneId) },
       { id: "terminal:canvas", label: "终端：当前标签改用 Canvas", description: "仅当前终端标签降级，不修改全局设置", icon: MonitorCog, category: "action" as const, action: () => forceTerminalCanvas(activeTerminalPaneId) },
     ] : []),
-    ...(activeTab?.kind === "project-workbench" ? [{ id: "project:quick-open", label: "项目：快速打开文件", description: activeTab.title, shortcut: "⌘/Ctrl P", icon: Search, category: "action" as const, action: () => window.dispatchEvent(new CustomEvent("simpl-ssh:project-quick-open")) }] : []),
+    ...(activeTab?.kind === "project-workbench" ? [
+      { id: "project:quick-open", label: "项目：快速打开文件", description: activeTab.title, shortcut: "⌘/Ctrl P", icon: Search, category: "action" as const, action: () => window.dispatchEvent(new CustomEvent("simpl-ssh:project-quick-open")) },
+      { id: "editor:save", label: "编辑器：保存当前文件", shortcut: "⌘/Ctrl S", icon: Save, category: "action" as const, action: () => window.dispatchEvent(new CustomEvent("simpl-ssh:editor-save")) },
+      { id: "editor:reload", label: "编辑器：从磁盘重新加载", description: "存在未保存内容时不会执行", icon: RefreshCw, category: "action" as const, action: () => window.dispatchEvent(new CustomEvent("simpl-ssh:editor-reload")) },
+    ] : []),
     ...projects.flatMap((project) => (project.agent_bindings ?? []).flatMap((binding) => {
       const preset = agentPresets.find((item) => item.id === binding.preset_id);
       return preset ? [{ id: `agent:${project.id}:${preset.id}`, label: `Agent：${preset.name}`, description: `${project.name} · ${binding.command_override || preset.command}`, icon: Sparkles, category: "action" as const, action: () => launchProjectAgent(project, binding) }] : [];

@@ -9,21 +9,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    io::Cursor,
     path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::Instant,
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::process::Command;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
-const CATALOG_URL: &str = "https://github.com/yuanqinglong5413/simpl-ssh-client/releases/latest/download/lsp-catalog.json";
+const CATALOG_URL: &str = "https://github.com/yuanqinglong5413/simpl-ssh-client/releases/download/lsp-runtime-stable/lsp-catalog.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +40,8 @@ pub struct LspPluginRuntime {
     pub signature: String,
     pub executable: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,12 +97,14 @@ pub struct LspPluginAvailability {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LspPluginDownloadProgress {
+pub struct LspInstallProgress {
     plugin_id: String,
     version: String,
-    downloaded: u64,
-    total: Option<u64>,
-    status: String,
+    phase: String,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    bytes_per_second: Option<u64>,
+    message: Option<String>,
 }
 
 #[derive(Default)]
@@ -173,66 +176,40 @@ impl LspPluginManager {
             .await?
             .into_iter()
             .map(|manifest| {
-                let installed_item = installed
-                    .iter()
-                    .find(|item| item.plugin_id == manifest.id && item.version == manifest.version);
-                let source = installed_item
-                    .map(|item| if matches!(item.source.as_str(), "bundled" | "managed") { "managed" } else { "system-detected" })
-                    .unwrap_or_else(|| if manifest.runtimes.contains_key(platform_key()) { "managed" } else { "system-detected" });
-                if source == "managed" {
-                    let runtime = manifest.runtimes.get(platform_key());
-                    let executable = runtime.and_then(|item| {
-                        self.plugin_root(app, &manifest.id, &manifest.version)
-                            .ok()
-                            .map(|root| root.join(&item.executable).to_string_lossy().into_owned())
-                    });
-                    let available = executable
-                        .as_deref()
-                        .map(Path::new)
-                        .is_some_and(is_executable);
-                    return LspPluginAvailability {
-                        plugin_id: manifest.id,
-                        version: manifest.version,
-                        status: if available { "available" } else { "missing" }.into(),
-                        source: "managed".into(),
-                        executable,
-                        detail: if available { "应用托管运行时已安装" } else { "应用托管运行时尚未安装" }.into(),
-                    };
-                }
-                match resolve_system_command(&manifest.id) {
-                    Ok(executable) if manifest.id == "jdtls" => match resolve_program("java") {
-                        Some(java) => LspPluginAvailability {
-                            plugin_id: manifest.id,
-                            version: manifest.version,
-                            status: "available".into(),
-                            source: "system-detected".into(),
-                            executable: Some(executable),
-                            detail: format!("系统命令可用；Java: {}", java.to_string_lossy()),
-                        },
-                        None => LspPluginAvailability {
-                            plugin_id: manifest.id,
-                            version: manifest.version,
-                            status: "unavailable".into(),
-                            source: "system-detected".into(),
-                            executable: Some(executable),
-                            detail: "已找到 jdtls，但没有找到 Java。请安装 JDK 并设置 JAVA_HOME 或 PATH。".into(),
-                        },
-                    },
-                    Ok(executable) => LspPluginAvailability {
-                        plugin_id: manifest.id,
-                        version: manifest.version,
-                        status: "available".into(),
-                        source: "system-detected".into(),
-                        executable: Some(executable),
-                        detail: "系统命令可用".into(),
-                    },
-                    Err(error) => LspPluginAvailability {
-                        plugin_id: manifest.id,
-                        version: manifest.version,
-                        status: "missing".into(),
-                        source: "system-detected".into(),
-                        executable: None,
-                        detail: error,
+                let runtime = manifest.runtimes.get(platform_key());
+                let executable = runtime.and_then(|item| {
+                    self.plugin_root(app, &manifest.id, &manifest.version)
+                        .ok()
+                        .map(|root| root.join(&item.executable).to_string_lossy().into_owned())
+                });
+                let available = executable
+                    .as_deref()
+                    .map(Path::new)
+                    .is_some_and(is_executable);
+                let installed_here = installed.iter().any(|item| {
+                    item.plugin_id == manifest.id
+                        && item.version == manifest.version
+                        && item.source == "managed"
+                });
+                LspPluginAvailability {
+                    plugin_id: manifest.id,
+                    version: manifest.version,
+                    status: if available && installed_here {
+                        "available"
+                    } else if runtime.is_some() {
+                        "missing"
+                    } else {
+                        "unavailable"
+                    }
+                    .into(),
+                    source: "managed".into(),
+                    executable,
+                    detail: if available && installed_here {
+                        "应用托管运行时已安装".into()
+                    } else if runtime.is_some() {
+                        "可下载 Simpl SSH 签名托管运行时".into()
+                    } else {
+                        "当前平台暂不可安装".into()
                     },
                 }
             })
@@ -268,43 +245,23 @@ impl LspPluginManager {
             .into_iter()
             .find(|item| item.id == plugin_id && item.version == version)
             .ok_or_else(|| "插件不在受信任目录中".to_string())?;
-        let runtime = manifest.runtimes.get(platform_key()).cloned();
-        if runtime
-            .as_ref()
-            .is_none_or(|runtime| runtime.archive_url.is_empty())
-        {
-            let source = if resolve_system_command(plugin_id).is_ok() {
-                "system-detected"
-            } else {
-                let key = format!("{plugin_id}@{version}");
-                let cancelled = Arc::new(AtomicBool::new(false));
-                {
-                    let mut downloads = self.downloads.lock().await;
-                    if downloads.contains_key(&key) {
-                        return Err("该语言服务正在下载".into());
-                    }
-                    downloads.insert(key.clone(), cancelled.clone());
-                }
-                let result = self
-                    .install_system_runtime(app, plugin_id, &cancelled)
-                    .await;
-                self.downloads.lock().await.remove(&key);
-                result?
-            };
-            let item = InstalledLspPlugin {
-                plugin_id: manifest.id,
-                version: manifest.version,
-                enabled: true,
-                priority: 0,
-                source: source.into(),
-            };
-            let mut items = self.load(app).await?;
-            items.retain(|old| old.plugin_id != item.plugin_id || old.version != item.version);
-            items.push(item.clone());
-            self.save(app, &items).await?;
-            return Ok(item);
-        }
-        let runtime = runtime.expect("checked above");
+        emit_install_progress(
+            app,
+            &manifest,
+            "resolving",
+            0,
+            None,
+            None,
+            Some("正在解析当前平台运行时"),
+        );
+        let runtime = manifest
+            .runtimes
+            .get(platform_key())
+            .cloned()
+            .filter(|runtime| !runtime.archive_url.is_empty())
+            .ok_or_else(|| {
+                "当前平台暂不可安装；Simpl SSH 不会调用 Homebrew 或修改系统环境".to_string()
+            })?;
         if runtime.sha256.is_empty() || runtime.signature.is_empty() {
             return Err("该插件尚未发布经过签名的当前平台运行时".into());
         }
@@ -321,18 +278,62 @@ impl LspPluginManager {
             .download_archive(app, &manifest, &runtime, &cancelled)
             .await;
         self.downloads.lock().await.remove(&download_key);
-        let bytes = result?;
-        verify_archive(&bytes, &runtime.sha256, &runtime.signature)?;
-        let _ = app.emit(
-            "lsp-plugin://download",
-            LspPluginDownloadProgress {
-                plugin_id: manifest.id.clone(),
-                version: manifest.version.clone(),
-                downloaded: bytes.len() as u64,
-                total: Some(bytes.len() as u64),
-                status: "verifying".into(),
-            },
+        let (archive_path, downloaded, actual_hash) = match result {
+            Ok(value) => value,
+            Err(error) => {
+                if let Ok(data_dir) = app.path().app_data_dir() {
+                    let _ = tokio::fs::remove_file(
+                        data_dir
+                            .join("lsp/downloads")
+                            .join(format!("{}-{}.zip.part", manifest.id, manifest.version)),
+                    )
+                    .await;
+                }
+                let phase = if cancelled.load(Ordering::Acquire) {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
+                emit_install_progress(
+                    app,
+                    &manifest,
+                    phase,
+                    0,
+                    runtime.size_bytes,
+                    None,
+                    Some(&error),
+                );
+                return Err(error);
+            }
+        };
+        emit_install_progress(
+            app,
+            &manifest,
+            "verifying",
+            downloaded,
+            Some(downloaded),
+            None,
+            Some("正在校验 SHA-256 与 Ed25519 签名"),
         );
+        if let Err(error) = verify_runtime_descriptor(
+            &manifest,
+            &runtime,
+            platform_key(),
+            &actual_hash,
+            downloaded,
+        ) {
+            let _ = tokio::fs::remove_file(&archive_path).await;
+            emit_install_progress(
+                app,
+                &manifest,
+                "failed",
+                downloaded,
+                Some(downloaded),
+                None,
+                Some(&error),
+            );
+            return Err(error);
+        }
         let root = self.plugin_root(app, &manifest.id, &manifest.version)?;
         let temp = root.with_extension("part");
         if tokio::fs::try_exists(&temp).await.unwrap_or(false) {
@@ -343,10 +344,36 @@ impl LspPluginManager {
         tokio::fs::create_dir_all(&temp)
             .await
             .map_err(|error| error.to_string())?;
+        emit_install_progress(
+            app,
+            &manifest,
+            "extracting",
+            downloaded,
+            Some(downloaded),
+            None,
+            Some("正在安全解压运行时"),
+        );
+        let archive_for_extract = archive_path.clone();
         let temp_for_extract = temp.clone();
-        tokio::task::spawn_blocking(move || extract_archive(&bytes, &temp_for_extract))
-            .await
-            .map_err(|error| error.to_string())??;
+        let extract_result = tokio::task::spawn_blocking(move || {
+            extract_archive_file(&archive_for_extract, &temp_for_extract)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        let _ = tokio::fs::remove_file(&archive_path).await;
+        if let Err(error) = extract_result {
+            let _ = tokio::fs::remove_dir_all(&temp).await;
+            emit_install_progress(
+                app,
+                &manifest,
+                "failed",
+                downloaded,
+                Some(downloaded),
+                None,
+                Some(&error),
+            );
+            return Err(error);
+        }
         let final_root = root.clone();
         // 保留一个版本级回滚目录，原子切换失败时仍可恢复上一份运行时。
         let rollback_root = root.with_extension("rollback");
@@ -360,15 +387,35 @@ impl LspPluginManager {
                 .await
                 .map_err(|error| error.to_string())?;
         }
+        emit_install_progress(
+            app,
+            &manifest,
+            "activating",
+            downloaded,
+            Some(downloaded),
+            None,
+            Some("正在原子启用运行时"),
+        );
         if let Err(error) = tokio::fs::rename(&temp, &final_root).await {
             if tokio::fs::try_exists(&rollback_root).await.unwrap_or(false) {
                 let _ = tokio::fs::rename(&rollback_root, &final_root).await;
             }
-            return Err(error.to_string());
+            let message = format!("无法启用语言服务运行时：{error}");
+            let _ = tokio::fs::remove_dir_all(&temp).await;
+            emit_install_progress(
+                app,
+                &manifest,
+                "failed",
+                downloaded,
+                Some(downloaded),
+                None,
+                Some(&message),
+            );
+            return Err(message);
         }
         let item = InstalledLspPlugin {
-            plugin_id: manifest.id,
-            version: manifest.version,
+            plugin_id: manifest.id.clone(),
+            version: manifest.version.clone(),
             enabled: true,
             priority: 0,
             source: "managed".into(),
@@ -377,6 +424,15 @@ impl LspPluginManager {
         items.retain(|old| old.plugin_id != item.plugin_id || old.version != item.version);
         items.push(item.clone());
         self.save(app, &items).await?;
+        emit_install_progress(
+            app,
+            &manifest,
+            "ready",
+            downloaded,
+            Some(downloaded),
+            None,
+            Some("语言服务已就绪"),
+        );
         Ok(item)
     }
 
@@ -386,7 +442,7 @@ impl LspPluginManager {
         manifest: &LspPluginManifest,
         runtime: &LspPluginRuntime,
         cancelled: &AtomicBool,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(PathBuf, u64, String), String> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
@@ -398,34 +454,77 @@ impl LspPluginManager {
             .map_err(|error| format!("下载插件失败：{error}"))?
             .error_for_status()
             .map_err(|error| format!("插件下载请求失败：{error}"))?;
-        let total = response.content_length();
-        if total.is_some_and(|size| size as usize > MAX_ARCHIVE_BYTES) {
+        let total = response.content_length().or(runtime.size_bytes);
+        if total.is_some_and(|size| size > MAX_ARCHIVE_BYTES) {
             return Err("插件包超过 512MB 限制".into());
         }
+        let download_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?
+            .join("lsp/downloads");
+        tokio::fs::create_dir_all(&download_dir)
+            .await
+            .map_err(|error| error.to_string())?;
+        let path = download_dir.join(format!("{}-{}.zip.part", manifest.id, manifest.version));
+        let _ = tokio::fs::remove_file(&path).await;
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|error| error.to_string())?;
         let mut stream = response.bytes_stream();
-        let mut bytes =
-            Vec::with_capacity(total.unwrap_or_default().min(16 * 1024 * 1024) as usize);
+        let mut digest = Sha256::new();
+        let mut downloaded = 0u64;
+        let started = Instant::now();
+        let mut last_progress = Instant::now();
         while let Some(chunk) = stream.next().await {
             if cancelled.load(Ordering::Acquire) {
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
                 return Err("下载已取消".into());
             }
             let chunk = chunk.map_err(|error| format!("读取插件失败：{error}"))?;
-            if bytes.len().saturating_add(chunk.len()) > MAX_ARCHIVE_BYTES {
+            downloaded = downloaded.saturating_add(chunk.len() as u64);
+            if downloaded > MAX_ARCHIVE_BYTES {
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
                 return Err("插件包超过 512MB 限制".into());
             }
-            bytes.extend_from_slice(&chunk);
-            let _ = app.emit(
-                "lsp-plugin://download",
-                LspPluginDownloadProgress {
-                    plugin_id: manifest.id.clone(),
-                    version: manifest.version.clone(),
-                    downloaded: bytes.len() as u64,
+            file.write_all(&chunk)
+                .await
+                .map_err(|error| format!("写入插件临时文件失败：{error}"))?;
+            digest.update(&chunk);
+            if last_progress.elapsed().as_millis() >= 100 || total == Some(downloaded) {
+                let speed = (downloaded as f64 / started.elapsed().as_secs_f64().max(0.05)) as u64;
+                emit_install_progress(
+                    app,
+                    manifest,
+                    "downloading",
+                    downloaded,
                     total,
-                    status: "downloading".into(),
-                },
-            );
+                    Some(speed),
+                    None,
+                );
+                last_progress = Instant::now();
+            }
         }
-        Ok(bytes)
+        let speed = (downloaded as f64 / started.elapsed().as_secs_f64().max(0.05)) as u64;
+        emit_install_progress(
+            app,
+            manifest,
+            "downloading",
+            downloaded,
+            total,
+            Some(speed),
+            None,
+        );
+        file.flush().await.map_err(|error| error.to_string())?;
+        file.sync_all().await.map_err(|error| error.to_string())?;
+        let actual_hash = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok((path, downloaded, actual_hash))
     }
 
     pub async fn cancel_install(&self, plugin_id: &str, version: &str) -> bool {
@@ -438,76 +537,6 @@ impl LspPluginManager {
         }
     }
 
-    /// 内置目录尚未发布签名包时的用户主动安装回退。命令不经过 shell、不会
-    /// 使用 sudo 或修改项目目录；当前支持 Homebrew / Linuxbrew。
-    async fn install_system_runtime(
-        &self,
-        app: &AppHandle,
-        plugin_id: &str,
-        cancelled: &AtomicBool,
-    ) -> Result<&'static str, String> {
-        let formula = system_formula(plugin_id)?;
-        let brew = resolve_program("brew").ok_or_else(|| {
-            "当前设备没有可用的自动安装器。请安装 Homebrew 后重试；Simpl SSH 不会在后台自行执行系统安装。"
-                .to_string()
-        })?;
-        let _ = app.emit(
-            "lsp-plugin://download",
-            LspPluginDownloadProgress {
-                plugin_id: plugin_id.into(),
-                version: "1.0.0".into(),
-                downloaded: 0,
-                total: None,
-                status: "installing-system".into(),
-            },
-        );
-        let mut command = Command::new(&brew);
-        command
-            .args(["install", formula])
-            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-            .kill_on_drop(true)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let child = command
-            .spawn()
-            .map_err(|error| format!("无法启动自动安装器：{error}"))?;
-        let output_future = child.wait_with_output();
-        tokio::pin!(output_future);
-        let output = tokio::time::timeout(Duration::from_secs(15 * 60), async {
-            loop {
-                tokio::select! {
-                    result = &mut output_future => return result.map_err(|error| format!("自动安装器执行失败：{error}")),
-                    _ = tokio::time::sleep(Duration::from_millis(120)) => if cancelled.load(Ordering::Acquire) { return Err("下载已取消".into()); }
-                }
-            }
-        }).await.map_err(|_| format!("下载 {formula} 超时，请检查网络后重试"))??;
-        if !output.status.success() {
-            let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if detail.is_empty() {
-                detail = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            }
-            let detail = detail
-                .chars()
-                .rev()
-                .take(1_200)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            return Err(format!(
-                "下载 {formula} 失败{}",
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!("：{detail}")
-                }
-            ));
-        }
-        resolve_system_command(plugin_id)
-            .map_err(|_| format!("{formula} 已下载，但未找到可执行文件；请重新打开设置后重试"))?;
-        let _ = app.emit("lsp-plugin://download", format!("{plugin_id} 已下载并启用"));
-        Ok("system-detected")
-    }
     pub async fn uninstall(
         &self,
         app: &AppHandle,
@@ -587,7 +616,7 @@ impl LspPluginManager {
             || installed.source == "system-detected"
             || installed.source == "managed-system"
         {
-            return Ok((resolve_system_command(plugin_id)?, system_args(plugin_id)));
+            return Err("该语言服务来自旧版系统检测，请从插件目录重新下载 Simpl SSH 托管运行时；不会再访问 PATH 或系统包管理器".into());
         }
         let runtime = manifest
             .runtimes
@@ -678,6 +707,12 @@ impl LspPluginManager {
                 _ => item.source.clone(),
             };
         }
+        let before = value.len();
+        value.retain(|item| item.source == "managed");
+        if value.len() != before {
+            // 旧版 PATH/Homebrew 插件记录不再视为已安装；自定义命令仍由 customServers 保留。
+            self.save(app, &value).await?;
+        }
         *self.installed.lock().await = value.clone();
         Ok(value)
     }
@@ -714,7 +749,7 @@ fn verifying_key_from_encoded(encoded: Option<&str>) -> Result<VerifyingKey, Str
     let encoded = encoded
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or("托管 LSP 目录尚未配置可信签名公钥；系统语言服务仍可继续使用。")?;
+        .ok_or("托管 LSP 目录尚未配置可信签名公钥。")?;
     let raw = BASE64
         .decode(encoded)
         .map_err(|_| "托管 LSP 签名公钥编码无效".to_string())?;
@@ -743,7 +778,7 @@ fn parse_signed_catalog(
         .map_err(|_| "插件目录签名校验失败".to_string())?;
     let catalog: LspCatalogPayload = serde_json::from_slice(&payload)
         .map_err(|error| format!("插件目录 payload 无效：{error}"))?;
-    if catalog.schema_version != 1 {
+    if catalog.schema_version != 2 {
         return Err(format!("不支持的插件目录版本：{}", catalog.schema_version));
     }
     if catalog.plugins.is_empty() {
@@ -758,6 +793,15 @@ fn parse_signed_catalog(
                 runtime.executable.is_empty()
                     || runtime.executable.contains(['\\', '\0'])
                     || !is_safe_runtime_relative_path(&runtime.executable)
+                    || !runtime.archive_url.starts_with("https://")
+                    || runtime.sha256.len() != 64
+                    || !runtime.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || runtime
+                        .size_bytes
+                        .is_none_or(|size| size == 0 || size > MAX_ARCHIVE_BYTES)
+                    || BASE64
+                        .decode(&runtime.signature)
+                        .map_or(true, |value| value.len() != 64)
             })
         {
             return Err("插件目录包含无效插件标识或运行时路径".into());
@@ -772,30 +816,90 @@ fn is_safe_runtime_relative_path(path: &str) -> bool {
         .all(|component| matches!(component, Component::Normal(_)))
 }
 
-fn verify_archive(bytes: &[u8], expected_hash: &str, signature: &str) -> Result<(), String> {
-    let digest = Sha256::digest(bytes);
-    let actual = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    if !actual.eq_ignore_ascii_case(expected_hash) {
+fn emit_install_progress(
+    app: &AppHandle,
+    manifest: &LspPluginManifest,
+    phase: &str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    bytes_per_second: Option<u64>,
+    message: Option<&str>,
+) {
+    let _ = app.emit(
+        "lsp-plugin://download",
+        LspInstallProgress {
+            plugin_id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            phase: phase.into(),
+            downloaded_bytes,
+            total_bytes,
+            bytes_per_second,
+            message: message.map(str::to_owned),
+        },
+    );
+}
+
+fn runtime_signature_payload(
+    manifest: &LspPluginManifest,
+    runtime: &LspPluginRuntime,
+    platform: &str,
+    hash: &str,
+    size: u64,
+) -> Vec<u8> {
+    format!(
+        "simpl-ssh-lsp-runtime-v2\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        manifest.id,
+        manifest.version,
+        platform,
+        hash.to_ascii_lowercase(),
+        size,
+        runtime.executable
+    )
+    .into_bytes()
+}
+
+fn verify_runtime_descriptor(
+    manifest: &LspPluginManifest,
+    runtime: &LspPluginRuntime,
+    platform: &str,
+    actual_hash: &str,
+    actual_size: u64,
+) -> Result<(), String> {
+    if !actual_hash.eq_ignore_ascii_case(&runtime.sha256) {
         return Err("插件包 SHA-256 校验失败".into());
+    }
+    if runtime
+        .size_bytes
+        .is_some_and(|expected| expected != actual_size)
+    {
+        return Err("插件包大小与受信任目录不一致".into());
     }
     let key = official_signing_key()?;
     let signature = Signature::from_slice(
         &BASE64
-            .decode(signature)
+            .decode(&runtime.signature)
             .map_err(|_| "插件签名编码无效".to_string())?,
     )
     .map_err(|_| "插件签名格式无效".to_string())?;
-    key.verify(bytes, &signature)
-        .map_err(|_| "插件签名校验失败".to_string())
+    key.verify(
+        &runtime_signature_payload(manifest, runtime, platform, actual_hash, actual_size),
+        &signature,
+    )
+    .map_err(|_| "插件签名校验失败".to_string())
 }
-fn extract_archive(bytes: &[u8], destination: &Path) -> Result<(), String> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|error| format!("插件包格式无效：{error}"))?;
+
+fn extract_archive_file(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let input = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
+    let mut archive =
+        zip::ZipArchive::new(input).map_err(|error| format!("插件包格式无效：{error}"))?;
     for index in 0..archive.len() {
         let mut file = archive.by_index(index).map_err(|error| error.to_string())?;
+        if file
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err("插件包包含符号链接，已拒绝安装".into());
+        }
         let Some(name) = file.enclosed_name().map(|path| path.to_path_buf()) else {
             return Err("插件包包含越界路径".into());
         };
@@ -808,6 +912,12 @@ fn extract_archive(bytes: &[u8], destination: &Path) -> Result<(), String> {
             }
             let mut output = std::fs::File::create(&target).map_err(|error| error.to_string())?;
             std::io::copy(&mut file, &mut output).map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            if let Some(mode) = file.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode & 0o777))
+                    .map_err(|error| error.to_string())?;
+            }
         }
     }
     Ok(())
@@ -839,99 +949,6 @@ fn platform_key() -> &'static str {
     }
 }
 
-fn system_command(plugin_id: &str) -> Result<String, String> {
-    let command = match plugin_id {
-        "typescript" => "typescript-language-server",
-        "pyright" => "pyright-langserver",
-        "rust-analyzer" => "rust-analyzer",
-        "gopls" => "gopls",
-        "jdtls" => "jdtls",
-        "clangd" => "clangd",
-        _ => return Err("未知插件命令".into()),
-    };
-    Ok(command.into())
-}
-
-fn system_formula(plugin_id: &str) -> Result<&'static str, String> {
-    match plugin_id {
-        "typescript" => Ok("typescript-language-server"),
-        "pyright" => Ok("pyright"),
-        "rust-analyzer" => Ok("rust-analyzer"),
-        "gopls" => Ok("gopls"),
-        "jdtls" => Ok("jdtls"),
-        // Homebrew 的 clangd 随 LLVM 发布；下方会在 opt/llvm/bin 内寻找它。
-        "clangd" => Ok("llvm"),
-        _ => Err("未知插件安装来源".into()),
-    }
-}
-
-/// 桌面应用从 Finder 启动时通常没有继承交互式 shell 的完整 PATH。
-/// 系统插件仍然直接执行真实文件（不经过 shell），这里只负责查找可执行文件。
-fn resolve_system_command(plugin_id: &str) -> Result<String, String> {
-    let command = system_command(plugin_id)?;
-    resolve_program(&command)
-        .map(|candidate| candidate.to_string_lossy().into_owned())
-        .ok_or_else(|| format!("`{command}` 尚未下载"))
-}
-
-fn resolve_program(command: &str) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if Path::new(command).is_absolute() {
-        candidates.push(PathBuf::from(command));
-    } else {
-        if let Some(path) = std::env::var_os("PATH") {
-            candidates.extend(std::env::split_paths(&path).flat_map(|directory| {
-                #[cfg(windows)]
-                {
-                    let extensions = std::env::var_os("PATHEXT")
-                        .unwrap_or_else(|| ".EXE;.CMD;.BAT".into())
-                        .to_string_lossy()
-                        .split(';')
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>();
-                    let mut paths = vec![directory.join(command)];
-                    paths.extend(
-                        extensions
-                            .into_iter()
-                            .map(|extension| directory.join(format!("{command}{extension}"))),
-                    );
-                    paths
-                }
-                #[cfg(not(windows))]
-                {
-                    vec![directory.join(command)]
-                }
-            }));
-        }
-        if let Some(home) = dirs::home_dir() {
-            candidates.extend([
-                home.join(".local/bin").join(command),
-                home.join(".local/share/nvim/mason/bin").join(command),
-                home.join(".local/share/mason/bin").join(command),
-                home.join(".sdkman/candidates/jdtls/current/bin")
-                    .join(command),
-            ]);
-        }
-        #[cfg(target_os = "macos")]
-        candidates.extend([
-            PathBuf::from("/opt/homebrew/bin").join(command),
-            PathBuf::from("/usr/local/bin").join(command),
-            PathBuf::from("/opt/homebrew/opt/llvm/bin").join(command),
-            PathBuf::from("/usr/local/opt/llvm/bin").join(command),
-        ]);
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| is_executable(candidate))
-}
-
-fn system_args(plugin_id: &str) -> Vec<String> {
-    if matches!(plugin_id, "typescript" | "pyright") {
-        vec!["--stdio".into()]
-    } else {
-        Vec::new()
-    }
-}
 fn builtin_catalog() -> Vec<LspPluginManifest> {
     [
         (
@@ -979,11 +996,12 @@ fn builtin_catalog() -> Vec<LspPluginManifest> {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+    use std::io::{Cursor, Write};
 
     fn signed_catalog(plugin_id: &str) -> (Vec<u8>, VerifyingKey) {
         let signing_key = SigningKey::from_bytes(&[7; 32]);
         let payload = serde_json::to_vec(&LspCatalogPayload {
-            schema_version: 1,
+            schema_version: 2,
             plugins: vec![LspPluginManifest {
                 id: plugin_id.into(),
                 version: "1.2.3".into(),
@@ -998,9 +1016,10 @@ mod tests {
                     LspPluginRuntime {
                         archive_url: "https://example.invalid/test.zip".into(),
                         sha256: "00".repeat(32),
-                        signature: "signature".into(),
+                        signature: BASE64.encode([0u8; 64]),
                         executable: "bin/test-lsp".into(),
                         args: vec![],
+                        size_bytes: Some(12),
                     },
                 )]),
             }],
@@ -1061,23 +1080,6 @@ mod tests {
     }
 
     #[test]
-    fn builtin_installers_cover_every_official_plugin() {
-        for plugin in [
-            "typescript",
-            "pyright",
-            "rust-analyzer",
-            "gopls",
-            "jdtls",
-            "clangd",
-        ] {
-            assert!(
-                system_formula(plugin).is_ok(),
-                "missing installer for {plugin}"
-            );
-        }
-    }
-
-    #[test]
     fn rejects_path_traversal_archive_entry() {
         let bytes = {
             let mut buffer = Cursor::new(Vec::new());
@@ -1085,13 +1087,17 @@ mod tests {
             writer
                 .start_file("../escape", zip::write::SimpleFileOptions::default())
                 .unwrap();
-            std::io::Write::write_all(&mut writer, b"bad").unwrap();
+            writer.write_all(b"bad").unwrap();
             writer.finish().unwrap();
             buffer.into_inner()
         };
-        assert!(
-            extract_archive(&bytes, Path::new("/tmp/simpl-lsp-test")).is_err()
-                || !Path::new("/tmp/escape").exists()
-        );
+        let unique = uuid::Uuid::new_v4().to_string();
+        let archive = std::env::temp_dir().join(format!("simpl-lsp-{unique}.zip"));
+        let destination = std::env::temp_dir().join(format!("simpl-lsp-{unique}"));
+        std::fs::write(&archive, bytes).unwrap();
+        assert!(extract_archive_file(&archive, &destination).is_err());
+        assert!(!destination.parent().unwrap().join("escape").exists());
+        let _ = std::fs::remove_file(archive);
+        let _ = std::fs::remove_dir_all(destination);
     }
 }

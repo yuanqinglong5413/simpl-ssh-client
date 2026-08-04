@@ -389,14 +389,11 @@ input {
 .project-editor-tabs > button svg { flex: 0 0 auto; }
 .project-editor-spacer { flex: 1; }
 .project-editor-tabs .icon-btn { flex: 0 0 32px; border-left: 1px solid var(--border-soft); }
+.project-editor-tabs .editor-nav { border-left: 0; border-right: 1px solid var(--border-soft); }
 .project-editor-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); }
 .project-editor-grid.split { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .project-editor-grid.split > * + * { border-left: 1px solid var(--border); }
 .local-editor-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.local-editor-head { display: flex; min-height: 31px; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--border-soft); color: var(--muted); font-family: var(--font-mono); font-size: 10.5px; }
-.local-editor-head > span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.local-editor-head em { color: var(--accent); font-family: var(--font-sans); font-style: normal; }
-.local-editor-head .icon-btn { flex: 0 0 auto; }
 .local-editor-pane .editor-host { min-height: 0; flex: 1; }
 .project-editor-empty { display: grid; place-content: center; justify-items: center; gap: 9px; min-height: 0; flex: 1; color: var(--muted); text-align: center; }
 .project-editor-empty h2 { margin: 0; color: var(--text-dim); font-size: 15px; }
@@ -2953,6 +2950,36 @@ input {
 .problem-info .problem-severity { color: var(--muted); background: var(--panel-2); }
 /* 签名提示 tooltip（LSP signatureHelp，自建） */
 .editor-host .cm-tooltip:has(.lsp-signature), .lsp-signature { background: var(--panel-2); color: var(--text); border: 1px solid var(--accent-soft); border-radius: 6px; padding: 6px 10px; font-family: var(--font-mono, "IBM Plex Mono", Menlo, monospace); font-size: 12px; max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* CodeMirror/LSP 浮层统一使用不透明编辑器表面，避免正文透出和整块遮挡。 */
+.editor-host .cm-tooltip:has(.lsp-hover),
+.editor-host .cm-tooltip:has(.lsp-signature),
+.editor-host .cm-tooltip.cm-tooltip-autocomplete,
+.editor-host .cm-tooltip.cm-tooltip-lint {
+  z-index: var(--z-menu);
+  box-sizing: border-box;
+  max-width: min(520px, calc(100vw - 32px));
+  max-height: min(240px, calc(100vh - 96px));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 14px 36px rgb(0 0 0 / 38%);
+}
+.lsp-hover { box-sizing: border-box; width: max-content; min-width: 180px; max-width: min(520px, calc(100vw - 48px)); padding: 10px 12px; overflow-wrap: anywhere; font: 12px/1.55 var(--font-sans); }
+.lsp-hover p { margin: 0 0 8px; }
+.lsp-hover p:last-child { margin-bottom: 0; }
+.lsp-hover code { font-family: var(--font-mono); }
+.lsp-hover p > code { padding: 1px 4px; border: 1px solid var(--border-soft); border-radius: 4px; background: var(--bg); color: var(--accent); }
+.lsp-hover pre { max-width: 100%; margin: 7px 0; padding: 8px 10px; overflow: auto; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg); color: var(--text); white-space: pre; }
+.lsp-hover .tok-keyword, .lsp-hover .tok-operatorKeyword, .lsp-hover .tok-modifier { color: #c678dd; }
+.lsp-hover .tok-typeName, .lsp-hover .tok-className, .lsp-hover .tok-bool, .lsp-hover .tok-null { color: #e5c07b; }
+.lsp-hover .tok-variableName, .lsp-hover .tok-propertyName { color: #e06c75; }
+.lsp-hover .tok-variableName.tok-definition, .lsp-hover .tok-function { color: #61afef; }
+.lsp-hover .tok-string, .lsp-hover .tok-regexp { color: #98c379; }
+.lsp-hover .tok-number, .lsp-hover .tok-integer, .lsp-hover .tok-float { color: #d19a66; }
+.lsp-hover .tok-comment, .lsp-hover .tok-meta { color: #7f8797; font-style: italic; }
+.lsp-hover .plain-text { color: var(--text); }
 /* 文档符号大纲面板 */
 .project-outline-panel { overflow: auto; padding: 4px; }
 .project-outline-item > button { display: block; width: 100%; text-align: left; padding: 4px 8px; border-radius: 6px; color: var(--text); }
@@ -2979,6 +3006,14 @@ input {
 .app-fatal-error h1 { margin: 0; color: var(--text); font-size: 20px; }
 .app-fatal-error p { margin: 8px 0 0; color: var(--muted); line-height: 1.55; }
 .app-fatal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.credential-migration-overlay { z-index: calc(var(--z-modal) + 10); }
+.credential-migration-dialog { width: min(560px, calc(100vw - 32px)); }
+.credential-migration-dialog .dialog-head { display: flex; align-items: center; gap: 9px; }
+.credential-vault-note { display: flex; gap: 9px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--muted); font-size: 11px; line-height: 1.5; }
+.credential-vault-note svg { flex: none; color: var(--accent); }
+.migration-success { display: grid; gap: 5px; margin-top: 12px; padding: 10px; border: 1px solid color-mix(in srgb, var(--green) 35%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--green) 8%, transparent); }
+.credential-migration-dialog .persistent-error div { display: grid; gap: 2px; margin-top: 6px; }
+.credential-migration-dialog .persistent-error small { color: var(--muted); }
 @media (max-width: 720px) { .preferences-dialog { width: 100vw; height: 100vh; max-height: none; border-radius: 0; } .preferences-title { min-width: auto; } .preferences-title { font-size: 0; } .preferences-search { width: auto; flex: 1; } .preferences-main { grid-template-columns: 150px minmax(0, 1fr); } .preferences-nav { padding: 10px 6px; } .preferences-nav-item { padding: 0 7px; } .preferences-content { padding: 18px; } .preference-card { grid-template-columns: 1fr; gap: 10px; } .preference-agent-create, .preference-agent-row, .preference-language-create, .preference-language-edit { grid-template-columns: 1fr; } .preference-language-create input:nth-child(3), .preference-language-create input:nth-child(4), .preference-language-create input:nth-child(5) { grid-column: auto; } .preference-agent-create .btn, .preference-language-create .btn { justify-content: center; } .preference-language-toggle-grid { grid-template-columns: 1fr; } .preferences-foot > span { display: none; } }
 
 .connect-advanced { margin-top: 10px; border-top: 1px solid var(--border-soft); }

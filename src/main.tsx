@@ -12,6 +12,8 @@ import { TerminalDiagnosticsProvider } from "./terminal/TerminalDiagnosticsProvi
 import { ToastProvider } from "./feedback/ToastProvider";
 import { ActivityProvider } from "./activity/ActivityProvider";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { LspInstallProvider } from "./lsp/LspInstallProvider";
+import { CredentialMigrationDialog } from "./components/CredentialMigrationDialog";
 
 // 注意：不使用 React.StrictMode —— 它在 dev 下会双次挂载 effect，导致终端
 // 的 terminal_open + WebSocket 被连开两次（产生多余的远端 shell）。终端这类
@@ -19,7 +21,7 @@ import { AppErrorBoundary } from "./components/AppErrorBoundary";
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <ThemeProvider>
     <SettingsProvider>
-      <ToastProvider><ActivityProvider><TaskProvider><TerminalDiagnosticsProvider><AppErrorBoundary><App /></AppErrorBoundary></TerminalDiagnosticsProvider></TaskProvider></ActivityProvider></ToastProvider>
+      <ToastProvider><ActivityProvider><LspInstallProvider><TaskProvider><TerminalDiagnosticsProvider><CredentialMigrationDialog /><AppErrorBoundary><App /></AppErrorBoundary></TerminalDiagnosticsProvider></TaskProvider></LspInstallProvider></ActivityProvider></ToastProvider>
     </SettingsProvider>
   </ThemeProvider>
 );

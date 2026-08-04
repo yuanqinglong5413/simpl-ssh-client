@@ -1,11 +1,8 @@
 //! 保存的连接配置。
 //!
 //! 元数据（名称/主机/端口/用户/认证方式/私钥路径）存本地 SQLite；
-//! 密码与私钥 passphrase 存 OS 钥匙串（keyring），**不落明文**。
-//!
-//! 钥匙串里的密码读出后会进入一个**内存加密缓存**（见 [`super::secrets`]），
-//! 24h 内重复连接同一配置直接命中缓存，不再访问钥匙串——避免 macOS 上
-//! 每次读取都弹系统授权框。缓存随进程退出而清空。
+//! 密码与私钥 passphrase 存应用 SQLite 加密仓库，不写入项目或日志。
+//! 旧 OS 钥匙串仅在用户明确确认的一次性迁移中访问，正常连接不会访问 keyring。
 
 use std::sync::Arc;
 
@@ -14,7 +11,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::auth::{SshAuth, SshConnectParams};
-use super::secrets::PasswordCache;
+use super::secrets::CredentialVault;
 use super::storage::AppDatabase;
 
 const SERVICE: &str = "simpl-ssh";
@@ -48,6 +45,31 @@ pub struct ProfileInput {
     pub startup_command: Option<String>,
     /// 用户标注的运行环境，只用于界面风险提示，不参与 SSH 协议。
     pub environment: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialMigrationStatus {
+    pub needed: bool,
+    pub profile_count: usize,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialMigrationFailure {
+    pub profile_id: String,
+    pub profile_name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialMigrationReport {
+    pub migrated: usize,
+    pub skipped: usize,
+    pub failures: Vec<CredentialMigrationFailure>,
+    pub complete: bool,
 }
 
 /// 一个保存的连接配置（不含密码 / passphrase）。
@@ -89,7 +111,7 @@ pub struct ConnectionProfile {
 pub struct ProfileStore {
     profiles: Mutex<Vec<ConnectionProfile>>,
     database: Arc<AppDatabase>,
-    cache: PasswordCache,
+    vault: CredentialVault,
 }
 
 impl ProfileStore {
@@ -98,10 +120,13 @@ impl ProfileStore {
         let mut profiles: Vec<ConnectionProfile> =
             database.load("profiles").ok().flatten().unwrap_or_default();
         normalize_positions(&mut profiles);
+        if profiles.is_empty() && !database.credential_migration_complete().unwrap_or(false) {
+            let _ = database.set_credential_migration_complete();
+        }
         Self {
             profiles: Mutex::new(profiles),
-            database,
-            cache: PasswordCache::new(),
+            database: database.clone(),
+            vault: CredentialVault::new(database),
         }
     }
 
@@ -118,21 +143,114 @@ impl ProfileStore {
             .cloned()
     }
 
-    /// 保存一个新配置：凭据进钥匙串，元数据进 SQLite 事务。
+    pub async fn credential_migration_status(&self) -> Result<CredentialMigrationStatus, String> {
+        let profile_count = self.profiles.lock().await.len();
+        let complete = self.database.credential_migration_complete()?;
+        Ok(CredentialMigrationStatus {
+            needed: profile_count > 0 && !complete,
+            profile_count,
+            complete,
+        })
+    }
+
+    /// 唯一允许读取旧 keyring 的路径；只在用户确认迁移后调用。
+    pub async fn migrate_keychain_credentials(&self) -> Result<CredentialMigrationReport, String> {
+        let profiles = self.profiles.lock().await.clone();
+        let mut report = CredentialMigrationReport {
+            migrated: 0,
+            skipped: 0,
+            failures: Vec::new(),
+            complete: false,
+        };
+        for profile in profiles {
+            let (kind, account, optional) = match profile.auth_method {
+                AuthMethod::Password => ("password", profile.id.clone(), false),
+                AuthMethod::PrivateKey => ("passphrase", passphrase_key(&profile.id), true),
+            };
+            let already_imported = self.vault.get(&profile.id, kind)?.is_some();
+            let entry = match keyring::Entry::new(SERVICE, &account) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    report.failures.push(CredentialMigrationFailure {
+                        profile_id: profile.id,
+                        profile_name: profile.name,
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if already_imported {
+                match entry.delete_credential() {
+                    Ok(()) | Err(keyring::Error::NoEntry) => report.skipped += 1,
+                    Err(error) => report.failures.push(CredentialMigrationFailure {
+                        profile_id: profile.id,
+                        profile_name: profile.name,
+                        reason: format!("凭据已导入，但旧钥匙串条目仍无法删除：{error}"),
+                    }),
+                }
+                continue;
+            }
+            let secret = match entry.get_password() {
+                Ok(secret) => secret,
+                Err(keyring::Error::NoEntry) if optional => {
+                    report.skipped += 1;
+                    continue;
+                }
+                Err(error) => {
+                    report.failures.push(CredentialMigrationFailure {
+                        profile_id: profile.id,
+                        profile_name: profile.name,
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if let Err(error) = self.vault.put(&profile.id, kind, &secret) {
+                report.failures.push(CredentialMigrationFailure {
+                    profile_id: profile.id,
+                    profile_name: profile.name,
+                    reason: error,
+                });
+                continue;
+            }
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => report.migrated += 1,
+                Err(error) => report.failures.push(CredentialMigrationFailure {
+                    profile_id: profile.id,
+                    profile_name: profile.name,
+                    reason: format!("已安全导入，但旧钥匙串条目未能删除：{error}"),
+                }),
+            }
+        }
+        let legacy_cleanup_remaining = self.retry_secret_cleanup()?;
+        if legacy_cleanup_remaining > 0 {
+            report.failures.push(CredentialMigrationFailure {
+                profile_id: "legacy-cleanup".into(),
+                profile_name: "已删除连接的旧凭据".into(),
+                reason: format!(
+                    "仍有 {legacy_cleanup_remaining} 项旧钥匙串条目未能删除，可稍后重试"
+                ),
+            });
+        }
+        report.complete = report.failures.is_empty();
+        if report.complete {
+            self.database.set_credential_migration_complete()?;
+        }
+        Ok(report)
+    }
+
+    /// 保存一个新配置：元数据与加密凭据都进入 SQLite。
     pub async fn save(&self, input: ProfileInput) -> Result<ConnectionProfile, String> {
         let id = Uuid::new_v4().to_string();
-        self.store_credentials(
-            &id,
-            input.auth_method.clone(),
-            input.password,
-            input.private_key_path.clone(),
-            input.passphrase,
-        )?;
+        let credential_method = input.auth_method.clone();
+        let credential_password = input.password.clone();
+        let credential_private_key = input.private_key_path.clone();
+        let credential_passphrase = input.passphrase.clone();
 
         let mut guard = self.profiles.lock().await;
         let position = next_position(&guard, input.group_id.as_deref());
         let profile = ConnectionProfile {
-            id,
+            id: id.clone(),
             name: input.name,
             host: input.host,
             port: input.port,
@@ -150,6 +268,16 @@ impl ProfileStore {
         let mut next = guard.clone();
         next.push(profile.clone());
         self.persist(&next)?;
+        if let Err(error) = self.store_credentials(
+            &id,
+            credential_method,
+            credential_password,
+            credential_private_key,
+            credential_passphrase,
+        ) {
+            let _ = self.persist(&guard);
+            return Err(error);
+        }
         *guard = next;
         Ok(profile)
     }
@@ -200,7 +328,7 @@ impl ProfileStore {
         Ok(count)
     }
 
-    /// 更新已有配置；密码 / passphrase 传空则保留钥匙串中的旧值。
+    /// 更新已有配置；密码 / passphrase 传空则保留加密仓库中的旧值。
     pub async fn update(&self, id: &str, input: ProfileInput) -> Result<ConnectionProfile, String> {
         let mut guard = self.profiles.lock().await;
         let idx = guard
@@ -209,42 +337,6 @@ impl ProfileStore {
             .ok_or_else(|| format!("profile not found: {id}"))?;
 
         let prev_method = guard[idx].auth_method.clone();
-        if prev_method != input.auth_method {
-            let _ = self.clear_credentials(id, &prev_method);
-            match &input.auth_method {
-                AuthMethod::Password => {
-                    let pw = input
-                        .password
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| "切换为密码认证需填写密码".to_string())?;
-                    self.set_password(id, &pw)?;
-                }
-                AuthMethod::PrivateKey => {
-                    if input.private_key_path.as_ref().is_none_or(|s| s.is_empty()) {
-                        return Err("切换为私钥认证需选择私钥文件".to_string());
-                    }
-                    if let Some(pp) = input.passphrase.filter(|s| !s.is_empty()) {
-                        self.set_passphrase(id, &pp)?;
-                    }
-                }
-            }
-        } else {
-            match input.auth_method {
-                AuthMethod::Password => {
-                    if let Some(pw) = input.password.filter(|s| !s.is_empty()) {
-                        self.set_password(id, &pw)?;
-                        self.cache.remove(id).await;
-                    }
-                }
-                AuthMethod::PrivateKey => {
-                    if let Some(pp) = input.passphrase.filter(|s| !s.is_empty()) {
-                        self.set_passphrase(id, &pp)?;
-                        self.cache.remove(&passphrase_key(id)).await;
-                    }
-                }
-            }
-        }
-
         if input.auth_method == AuthMethod::PrivateKey
             && input.private_key_path.as_ref().is_none_or(|s| s.is_empty())
         {
@@ -254,6 +346,16 @@ impl ProfileStore {
         if input.jump_profile_id.as_deref() == Some(id) {
             return Err("跳板机不能指向自身".to_string());
         }
+        if prev_method != input.auth_method
+            && input.auth_method == AuthMethod::Password
+            && input.password.as_ref().is_none_or(|value| value.is_empty())
+        {
+            return Err("切换为密码认证需填写密码".into());
+        }
+        let credential_method = input.auth_method.clone();
+        let credential_password = input.password.clone();
+        let credential_private_key = input.private_key_path.clone();
+        let credential_passphrase = input.passphrase.clone();
 
         let old_group = guard[idx].group_id.clone();
         let position = if old_group == input.group_id {
@@ -281,35 +383,59 @@ impl ProfileStore {
         normalize_positions(&mut next);
         let updated = next[idx].clone();
         self.persist(&next)?;
+        let credential_result = if prev_method != credential_method {
+            self.store_credentials(
+                id,
+                credential_method.clone(),
+                credential_password,
+                credential_private_key,
+                credential_passphrase,
+            )
+        } else {
+            match credential_method {
+                AuthMethod::Password => credential_password
+                    .filter(|value| !value.is_empty())
+                    .map_or(Ok(()), |password| self.set_password(id, &password)),
+                AuthMethod::PrivateKey => credential_passphrase
+                    .filter(|value| !value.is_empty())
+                    .map_or(Ok(()), |passphrase| self.set_passphrase(id, &passphrase)),
+            }
+        };
+        if let Err(error) = credential_result {
+            let _ = self.persist(&guard);
+            return Err(error);
+        }
+        if prev_method != updated.auth_method {
+            let _ = self.clear_credentials(id, &prev_method);
+        }
         *guard = next;
         Ok(updated)
     }
 
-    /// 删除一个配置：从 JSON 移除并清理钥匙串条目。
+    /// 删除一个配置：规范化 profile 删除会通过 SQLite 外键级联删除密文。
     pub async fn delete(&self, id: &str) -> Result<(), String> {
         let auth_method = {
             let mut guard = self.profiles.lock().await;
-            let auth = guard
+            let auth_method = guard
                 .iter()
-                .find(|p| p.id == id)
-                .map(|p| p.auth_method.clone());
+                .find(|profile| profile.id == id)
+                .map(|profile| profile.auth_method.clone());
             guard.retain(|p| p.id != id);
             self.persist(&guard)?;
-            auth
+            auth_method
         };
-        if let Some(method) = auth_method {
-            let kind = if method == AuthMethod::Password {
-                "password"
-            } else {
-                "passphrase"
-            };
-            self.database.enqueue_secret_cleanup(id, kind)?;
-            if self.clear_credentials(id, &method).is_ok() {
-                self.database.complete_secret_cleanup(id, kind)?;
+        if !self.database.credential_migration_complete()? {
+            if let Some(method) = auth_method {
+                self.database.enqueue_secret_cleanup(
+                    id,
+                    if method == AuthMethod::Password {
+                        "password"
+                    } else {
+                        "passphrase"
+                    },
+                )?;
             }
         }
-        self.cache.remove(id).await;
-        self.cache.remove(&passphrase_key(id)).await;
         Ok(())
     }
 
@@ -351,18 +477,17 @@ impl ProfileStore {
             }
             removed
         };
-        for (id, method) in &removed {
-            let kind = if *method == AuthMethod::Password {
-                "password"
-            } else {
-                "passphrase"
-            };
-            self.database.enqueue_secret_cleanup(id, kind)?;
-            if self.clear_credentials(id, method).is_ok() {
-                self.database.complete_secret_cleanup(id, kind)?;
+        if !self.database.credential_migration_complete()? {
+            for (id, method) in &removed {
+                self.database.enqueue_secret_cleanup(
+                    id,
+                    if *method == AuthMethod::Password {
+                        "password"
+                    } else {
+                        "passphrase"
+                    },
+                )?;
             }
-            self.cache.remove(id).await;
-            self.cache.remove(&passphrase_key(id)).await;
         }
         Ok(removed.len())
     }
@@ -386,7 +511,7 @@ impl ProfileStore {
                     continue;
                 }
             };
-            match self.clear_credentials(&item.profile_id, &method) {
+            match delete_legacy_keychain_credential(&item.profile_id, &method) {
                 Ok(()) => self
                     .database
                     .complete_secret_cleanup(&item.profile_id, &item.credential_kind)?,
@@ -475,7 +600,7 @@ impl ProfileStore {
         Ok(())
     }
 
-    /// 将 profile 转为 SSH 连接参数（从钥匙串读凭据，解析跳板机）。
+    /// 将 profile 转为 SSH 连接参数（从应用加密仓库读凭据，解析跳板机）。
     pub async fn to_connect_params(
         &self,
         profile: &ConnectionProfile,
@@ -544,41 +669,24 @@ impl ProfileStore {
         })))
     }
 
-    /// 读取某配置的密码（内存缓存 → 钥匙串）。
+    /// 读取某配置的密码；正常连接只访问应用加密仓库。
     pub async fn get_password(&self, id: &str) -> Result<String, String> {
-        if let Some(pw) = self.cache.get(id).await {
-            return Ok(pw);
-        }
-        let entry = keyring::Entry::new(SERVICE, id).map_err(|e| e.to_string())?;
-        let pw = entry.get_password().map_err(|e| e.to_string())?;
-        self.cache.put(id, &pw).await;
-        Ok(pw)
+        self.vault
+            .get(id, "password")?
+            .ok_or_else(|| "此连接尚未迁移或填写密码，请编辑连接后重新填写".to_string())
     }
 
     /// 读取私钥 passphrase（可选；无则 Ok 空串）。
     pub async fn get_passphrase(&self, id: &str) -> Result<String, String> {
-        let key = passphrase_key(id);
-        if let Some(pw) = self.cache.get(&key).await {
-            return Ok(pw);
-        }
-        let entry = keyring::Entry::new(SERVICE, &key).map_err(|e| e.to_string())?;
-        match entry.get_password() {
-            Ok(pw) => {
-                self.cache.put(&key, &pw).await;
-                Ok(pw)
-            }
-            Err(_) => Ok(String::new()),
-        }
+        Ok(self.vault.get(id, "passphrase")?.unwrap_or_default())
     }
 
     fn set_password(&self, id: &str, password: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(SERVICE, id).map_err(|e| e.to_string())?;
-        entry.set_password(password).map_err(|e| e.to_string())
+        self.vault.put(id, "password", password)
     }
 
     fn set_passphrase(&self, id: &str, passphrase: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(SERVICE, &passphrase_key(id)).map_err(|e| e.to_string())?;
-        entry.set_password(passphrase).map_err(|e| e.to_string())
+        self.vault.put(id, "passphrase", passphrase)
     }
 
     fn store_credentials(
@@ -609,21 +717,14 @@ impl ProfileStore {
     }
 
     fn clear_credentials(&self, id: &str, auth_method: &AuthMethod) -> Result<(), String> {
-        let result = match auth_method {
-            AuthMethod::Password => {
-                let entry = keyring::Entry::new(SERVICE, id).map_err(|error| error.to_string())?;
-                entry.delete_credential()
-            }
-            AuthMethod::PrivateKey => {
-                let entry = keyring::Entry::new(SERVICE, &passphrase_key(id))
-                    .map_err(|error| error.to_string())?;
-                entry.delete_credential()
-            }
-        };
-        match result {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(error.to_string()),
-        }
+        self.vault.delete(
+            id,
+            if *auth_method == AuthMethod::Password {
+                "password"
+            } else {
+                "passphrase"
+            },
+        )
     }
 
     fn persist(&self, profiles: &[ConnectionProfile]) -> Result<(), String> {
@@ -668,4 +769,17 @@ impl Default for ProfileStore {
 
 fn passphrase_key(id: &str) -> String {
     format!("{id}:passphrase")
+}
+
+fn delete_legacy_keychain_credential(id: &str, auth_method: &AuthMethod) -> Result<(), String> {
+    let account = if *auth_method == AuthMethod::Password {
+        id.to_string()
+    } else {
+        passphrase_key(id)
+    };
+    let entry = keyring::Entry::new(SERVICE, &account).map_err(|error| error.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }

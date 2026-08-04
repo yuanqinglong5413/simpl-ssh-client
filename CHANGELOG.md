@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-08-04
+
+### 新增
+- **托管 LSP 安装体验**：应用级安装进度覆盖解析、下载、校验、解压与激活阶段，展示真实容量、速度，并支持取消和失败重试。
+- **应用加密凭据仓库**：连接凭据迁移到本地 AES-256-GCM 加密存储，提供一次性钥匙串迁移与失败重试，日常连接不再反复请求系统授权。
+
+### 变更
+- **编辑器界面降噪**：移除完整路径、语言名称和正常 LSP 状态等常驻提示；无定义位置等预期空结果保持静默。
+- **LSP Hover 交互**：仅在 Cmd/Ctrl 悬停符号时请求并显示，使用不透明、受视口约束且跟随主题语法配色的浮层。
+- **签名托管运行时**：安装仅接受 Simpl SSH 稳定目录中的签名平台资产，不再静默调用 Homebrew、系统包管理器或 PATH 回退。
+
+### 修复
+- **浮层遮挡与配色**：修复 Hover 透明背景、超长内容撑破编辑区、层级遮挡和代码片段缺少主题高亮的问题。
+- **下载状态失真**：修复安装过程长期显示 `0 MB`、切换标签丢失进度以及校验/解压阶段状态不清的问题。
+- **凭据生命周期**：取消 24 小时缓存过期；退出时清理内存凭据，删除连接时同步清理加密记录。
+
 ## [0.12.2] - 2026-08-04
 
 ### 新增
@@ -190,7 +206,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.11.1...v0.12.0

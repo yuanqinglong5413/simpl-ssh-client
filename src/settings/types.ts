@@ -16,7 +16,17 @@ export type LspPluginLanguage = { id: string; extensions: string[]; lspId: strin
 export type LspPluginManifest = {
   id: string; version: string; name: string; publisher: string; description: string;
   languages: LspPluginLanguage[]; rootMarkers: string[]; capabilities: string[];
-  runtimes: Record<string, { archiveUrl: string; sha256: string; signature: string; executable: string; args: string[] }>;
+  runtimes: Record<string, { archiveUrl: string; sha256: string; signature: string; executable: string; args: string[]; sizeBytes?: number }>;
+};
+export type LspInstallPhase = "resolving" | "downloading" | "verifying" | "extracting" | "activating" | "ready" | "cancelled" | "failed";
+export type LspInstallProgress = {
+  pluginId: string;
+  version: string;
+  phase: LspInstallPhase;
+  downloadedBytes: number;
+  totalBytes?: number;
+  bytesPerSecond?: number;
+  message?: string;
 };
 export type InstalledLspPlugin = { pluginId: string; version: string; enabled: boolean; priority: number; source?: "managed" | "custom" | "system-detected" };
 export type LspPluginAvailability = {

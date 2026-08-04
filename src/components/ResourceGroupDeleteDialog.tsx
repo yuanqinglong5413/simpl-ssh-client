@@ -19,7 +19,7 @@ export function ResourceGroupDeleteDialog({ group, onClose, onConfirm }: { group
     {error && <p className="form-error">无法读取影响范围：{error}</p>}
     {preview && <>
       <p>将递归删除「<strong>{group.name}</strong>」及其内容：</p>
-      <ul><li>{preview.group_count} 个分组文件夹</li><li>{preview.connection_count} 个连接配置及其钥匙串凭据</li><li>{preview.project_count} 个项目记录</li></ul>
+      <ul><li>{preview.group_count} 个分组文件夹</li><li>{preview.connection_count} 个连接配置及其应用加密凭据</li><li>{preview.project_count} 个项目记录</li></ul>
       <p><strong>不会删除任何本地项目目录、源码或远程文件。</strong></p>
     </>}
   </ConfirmDialog>;

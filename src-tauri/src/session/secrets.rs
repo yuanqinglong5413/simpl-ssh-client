@@ -1,109 +1,173 @@
-//! 内存密码缓存（加密）。
+//! 应用加密凭据仓库。
 //!
-//! 目的：避免反复访问 OS 钥匙串——macOS 上每次读取都可能弹一次系统授权框，
-//! 同一连接连点两次就弹两次，体验很差。
-//!
-//! - 钥匙串里的密码读出后，加密存进本缓存；24h 内重复连接同一配置直接命中缓存，
-//!   不再碰钥匙串。
-//! - 缓存只存在于进程内存，应用关闭即随进程消失（满足"关闭就清空"）。
-//! - 加密 key 由「机器唯一 ID + 应用专属盐」派生（机器绑定，永久不变）；
-//!   万一某环境取不到机器 ID，退化为进程随机 key（关闭即失效，安全等价）。
-//! - 即使进程内存被 dump 或 swap 到磁盘，缓存的也是密文，不直接暴露明文密码。
+//! 密文保存在 SQLite，AES-256-GCM 密钥由机器标识与随机安装盐通过 HKDF-SHA256
+//! 派生。AAD 绑定 profile、凭据类型和 schema，防止数据库记录互换。
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use rand::rngs::OsRng;
-use rand::RngCore;
-use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use hkdf::Hkdf;
+use rand::{rngs::OsRng, RngCore};
+use sha2_10::Sha256;
 
-/// 应用专属盐：让派生出的 key 与本机其它应用区分（即使它们也用了同一机器 ID）。
-const KEY_SALT: &[u8] = b"simpl-ssh/v1/credential-cache";
+use super::storage::AppDatabase;
 
-/// 缓存条目存活时长：24 小时。
-const TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const VAULT_SCHEMA: u8 = 1;
+const KEY_CONTEXT: &[u8] = b"simpl-ssh/credential-vault/aes-256-gcm/v1";
 
-/// 一条缓存：nonce + 密文 + 写入时刻。
-#[derive(Clone)]
-struct Cached {
-    nonce: [u8; 12],
-    ciphertext: Vec<u8>,
-    at: Instant,
+pub struct CredentialVault {
+    database: Arc<AppDatabase>,
+    key: Option<[u8; 32]>,
+    initialization_error: Option<String>,
 }
 
-/// 进程级密码缓存（加密）。构造时算一次 key，之后固定。
-pub struct PasswordCache {
-    key: [u8; 32],
-    store: Mutex<HashMap<String, Cached>>,
-}
-
-impl PasswordCache {
-    pub fn new() -> Self {
+impl CredentialVault {
+    pub fn new(database: Arc<AppDatabase>) -> Self {
+        let salt = match database.credential_install_salt() {
+            Ok(salt) => salt,
+            Err(error) => {
+                return Self {
+                    database,
+                    key: None,
+                    initialization_error: Some(format!("无法初始化凭据仓库安装盐：{error}")),
+                }
+            }
+        };
+        let machine = match machine_uid::get() {
+            Ok(machine) => machine,
+            Err(error) => {
+                return Self {
+                    database,
+                    key: None,
+                    initialization_error: Some(format!("无法读取本机标识：{error}")),
+                }
+            }
+        };
+        let hkdf = Hkdf::<Sha256>::new(Some(&salt), machine.as_bytes());
+        let mut key = [0u8; 32];
+        // 32-byte SHA-256 HKDF output cannot fail for this fixed context and length.
+        hkdf.expand(KEY_CONTEXT, &mut key)
+            .expect("fixed HKDF output length is valid");
         Self {
-            key: derive_key(),
-            store: Mutex::new(HashMap::new()),
+            database,
+            key: Some(key),
+            initialization_error: None,
         }
     }
 
-    /// 命中且未过期 → 返回解密后的明文；否则 None（调用方回落钥匙串）。
-    pub async fn get(&self, key: &str) -> Option<String> {
-        let entry = self.store.lock().await.get(key).cloned()?;
-        if entry.at.elapsed() > TTL {
-            return None;
-        }
-        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.key));
-        cipher
-            .decrypt(&Nonce::from(entry.nonce), entry.ciphertext.as_ref())
-            .ok()
-            .and_then(|b| String::from_utf8(b).ok())
-    }
-
-    /// 加密一条明文密码并入缓存。
-    pub async fn put(&self, key: &str, password: &str) {
+    pub fn put(&self, profile_id: &str, kind: &str, secret: &str) -> Result<(), String> {
+        validate_kind(kind)?;
         let mut nonce = [0u8; 12];
         OsRng.fill_bytes(&mut nonce);
-        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.key));
-        let ciphertext = match cipher.encrypt(&Nonce::from(nonce), password.as_bytes()) {
-            Ok(c) => c,
-            Err(_) => return,
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.key()?));
+        let ciphertext = cipher
+            .encrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: secret.as_bytes(),
+                    aad: &aad(profile_id, kind),
+                },
+            )
+            .map_err(|_| "无法加密凭据".to_string())?;
+        self.database
+            .credential_write(profile_id, kind, &nonce, &ciphertext)?;
+        // 写入后立即读回验证；只有通过验证的记录才视为迁移成功。
+        if self.get(profile_id, kind)?.as_deref() != Some(secret) {
+            let _ = self.database.credential_delete(profile_id, kind);
+            return Err("凭据仓库写入校验失败".into());
+        }
+        Ok(())
+    }
+
+    pub fn get(&self, profile_id: &str, kind: &str) -> Result<Option<String>, String> {
+        validate_kind(kind)?;
+        let Some(record) = self.database.credential_read(profile_id, kind)? else {
+            return Ok(None);
         };
-        self.store.lock().await.insert(
-            key.to_string(),
-            Cached {
-                nonce,
-                ciphertext,
-                at: Instant::now(),
-            },
+        if record.schema_version != i64::from(VAULT_SCHEMA) || record.nonce.len() != 12 {
+            return Err("凭据仓库记录版本或 nonce 无效".into());
+        }
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.key()?));
+        let nonce: [u8; 12] = record
+            .nonce
+            .try_into()
+            .map_err(|_| "凭据仓库 nonce 长度无效".to_string())?;
+        let plaintext = cipher
+            .decrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: &record.ciphertext,
+                    aad: &aad(profile_id, kind),
+                },
+            )
+            .map_err(|_| "凭据无法解密；本机标识可能已变化，请重新填写凭据".to_string())?;
+        String::from_utf8(plaintext)
+            .map(Some)
+            .map_err(|_| "凭据内容编码无效".to_string())
+    }
+
+    pub fn delete(&self, profile_id: &str, kind: &str) -> Result<(), String> {
+        validate_kind(kind)?;
+        self.database.credential_delete(profile_id, kind)
+    }
+
+    fn key(&self) -> Result<[u8; 32], String> {
+        self.key.ok_or_else(|| {
+            self.initialization_error
+                .clone()
+                .unwrap_or_else(|| "凭据仓库尚未初始化".into())
+        })
+    }
+}
+
+fn validate_kind(kind: &str) -> Result<(), String> {
+    if matches!(kind, "password" | "passphrase") {
+        Ok(())
+    } else {
+        Err("未知凭据类型".into())
+    }
+}
+
+fn aad(profile_id: &str, kind: &str) -> Vec<u8> {
+    format!("simpl-ssh:vault:{VAULT_SCHEMA}:{profile_id}:{kind}").into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vault_roundtrip_and_aad_binding() {
+        let database = Arc::new(AppDatabase::memory());
+        database
+            .save(
+                "profiles",
+                &serde_json::json!([
+                    { "id": "a", "name": "A", "host": "localhost", "port": 22, "user": "u", "auth_method": "password", "position": 0 },
+                    { "id": "b", "name": "B", "host": "localhost", "port": 22, "user": "u", "auth_method": "password", "position": 1 }
+                ]),
+            )
+            .unwrap();
+        let vault = CredentialVault::new(database.clone());
+        vault.put("a", "password", "你好-secret").unwrap();
+        assert_eq!(
+            vault.get("a", "password").unwrap().as_deref(),
+            Some("你好-secret")
+        );
+        assert!(vault.get("a", "passphrase").unwrap().is_none());
+        let record = database.credential_read("a", "password").unwrap().unwrap();
+        database
+            .credential_write("b", "password", &record.nonce, &record.ciphertext)
+            .unwrap();
+        assert!(
+            vault.get("b", "password").is_err(),
+            "AAD 必须阻止 profile 间互换密文"
+        );
+        database.save("profiles", &serde_json::json!([])).unwrap();
+        assert!(
+            database.credential_read("a", "password").unwrap().is_none(),
+            "删除 profile 必须级联删除密文"
         );
     }
-
-    /// 删除一条（配置被删时清理，避免残留密文）。
-    pub async fn remove(&self, key: &str) {
-        self.store.lock().await.remove(key);
-    }
-}
-
-impl Default for PasswordCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// 机器绑定派生 key：机器 ID（取不到则进程随机）+ 应用盐 → SHA-256 → 32 字节。
-fn derive_key() -> [u8; 32] {
-    let mut h = Sha256::new();
-    match machine_uid::get() {
-        Ok(id) => h.update(id.as_bytes()),
-        Err(_) => {
-            // 取不到机器 ID：用随机 key（进程级，关闭即失效，与"清空"语义一致）
-            let mut rand_key = [0u8; 32];
-            OsRng.fill_bytes(&mut rand_key);
-            h.update(rand_key);
-        }
-    }
-    h.update(KEY_SALT);
-    h.finalize().into()
 }

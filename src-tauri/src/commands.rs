@@ -903,7 +903,21 @@ pub async fn profile_list(
     Ok(state.list().await)
 }
 
-/// 保存一个连接配置（凭据进 OS 钥匙串，元数据进本地 JSON）。返回新建的配置。
+#[tauri::command]
+pub async fn credential_migration_status(
+    state: tauri::State<'_, ProfileStore>,
+) -> Result<crate::session::profile::CredentialMigrationStatus, String> {
+    state.credential_migration_status().await
+}
+
+#[tauri::command]
+pub async fn credential_migration_run(
+    state: tauri::State<'_, ProfileStore>,
+) -> Result<crate::session::profile::CredentialMigrationReport, String> {
+    state.migrate_keychain_credentials().await
+}
+
+/// 保存一个连接配置（凭据进应用 SQLite 加密仓库）。返回新建的配置。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn profile_save(
@@ -1000,7 +1014,7 @@ pub async fn profile_select_private_key() -> Result<Option<String>, String> {
     Ok(picked.map(|f| f.path().to_string_lossy().into_owned()))
 }
 
-/// 删除一个保存的连接配置（同时清理钥匙串）。
+/// 删除一个保存的连接配置（SQLite 外键同时清理加密凭据）。
 #[tauri::command]
 pub async fn profile_delete(
     state: tauri::State<'_, ProfileStore>,
@@ -1030,7 +1044,7 @@ pub async fn profiles_import_ssh_config(
     state.import_many(inputs).await
 }
 
-/// 用保存的配置直接连接（从钥匙串取密码）。
+/// 用保存的配置直接连接（从应用加密仓库取密码）。
 #[tauri::command]
 pub async fn profile_connect(
     state: tauri::State<'_, ProfileStore>,

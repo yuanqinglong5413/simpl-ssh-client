@@ -7,9 +7,8 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { bracketMatching } from "@codemirror/language";
 import { lintGutter, setDiagnostics } from "@codemirror/lint";
-import { ArrowLeft, ArrowRight, RefreshCw, Save } from "lucide-react";
 import type { RemoteFileContent } from "../types";
-import { cmExtension, detectLanguage, languageDefinition, languageLabel } from "../utils/editorLanguages";
+import { cmExtension, detectLanguage, languageDefinition } from "../utils/editorLanguages";
 import type { InstalledLspPlugin, LanguageServerConfig, LspPluginManifest } from "../settings/types";
 import { fileUri, languageClientStore, languageServerMatches, projectLanguageOverride, useLanguageClient, type LspDiagnostic } from "../lsp/LanguageClientStore";
 import { pluginForLanguage } from "../lsp/plugins";
@@ -24,6 +23,7 @@ import { ErrorState, LoadingState } from "./LoadingState";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { invokeWithTimeout } from "../utils/invokeWithTimeout";
 import { clampPosition, type LspLocation, type NavigationSource, type NavigationTarget } from "../lsp/navigation";
+import { useActivity } from "../activity/ActivityProvider";
 
 const semanticEffect = StateEffect.define<DecorationSet>();
 const semanticField = StateField.define<DecorationSet>({
@@ -73,6 +73,7 @@ type Props = {
   formatOnSave?: boolean;
   signatureHelp?: boolean;
   navigationTarget?: NavigationTarget | null;
+  /** Navigation actions are rendered by the shared editor tab bar. */
   canNavigateBack?: boolean;
   canNavigateForward?: boolean;
   onNavigateBack?: () => void;
@@ -88,7 +89,8 @@ type Props = {
 };
 
 /** 项目内本地编辑器：只调用带项目根目录校验的 IPC，不复用远程 SFTP 编辑通道。 */
-export function LocalEditorPane({ root, filePath, projectId, active, editorActive = true, missing = false, languageServers = [], languageServerOverrides, pluginCatalog = [], installedPlugins = [], pluginOverrides, syntaxHighlighting = true, languageHighlighting = {}, semanticHighlighting = "auto", bracketMatching: bracketMatchingEnabled = true, highlightActiveLine: highlightActiveLineEnabled = true, showWhitespace = false, codeCompletion = true, hoverEnabled = true, formatOnSave = false, signatureHelp = true, navigationTarget = null, canNavigateBack = false, canNavigateForward = false, onNavigateBack, onNavigateForward, onNavigateLocation, onReferenceLocations, onNavigationApplied, onDirtyChange, onDiagnosticsChange, onApplyEdits, onDocumentSymbol, onActiveServerId }: Props) {
+export function LocalEditorPane({ root, filePath, projectId, active, editorActive = true, missing = false, languageServers = [], languageServerOverrides, pluginCatalog = [], installedPlugins = [], pluginOverrides, syntaxHighlighting = true, languageHighlighting = {}, semanticHighlighting = "auto", bracketMatching: bracketMatchingEnabled = true, highlightActiveLine: highlightActiveLineEnabled = true, showWhitespace = false, codeCompletion = true, hoverEnabled = true, formatOnSave = false, signatureHelp = true, navigationTarget = null, onNavigateLocation, onReferenceLocations, onNavigationApplied, onDirtyChange, onDiagnosticsChange, onApplyEdits, onDocumentSymbol, onActiveServerId }: Props) {
+  const { add: addActivity } = useActivity();
   const hostRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef("");
   const [content, setContent] = useState("");
@@ -101,9 +103,7 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
   const [fileRevision, setFileRevision] = useState<string | undefined>();
   const [externalContent, setExternalContent] = useState<string | null>(null);
   const [externalRevision, setExternalRevision] = useState<string | undefined>();
-  const [externalNotice, setExternalNotice] = useState("");
   const [lspServerId, setLspServerId] = useState<string | undefined>(undefined);
-  const [lspRetryNonce, setLspRetryNonce] = useState(0);
   const [renameState, setRenameState] = useState<{ initialName: string; position: number } | null>(null);
   const lspServerRef = useRef<string | undefined>(undefined);
   const editorViewRef = useRef<EditorView | null>(null);
@@ -121,7 +121,6 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
   onDocumentSymbolRef.current = onDocumentSymbol;
   const onActiveServerIdRef = useRef(onActiveServerId);
   onActiveServerIdRef.current = onActiveServerId;
-  const [navigationNotice, setNavigationNotice] = useState("");
   const identityRef = useRef({ root, filePath });
   identityRef.current = { root, filePath };
   contentRef.current = content;
@@ -140,43 +139,40 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
 
   async function requestDefinitionAt(view: EditorView, position: number) {
     const serverId = lspServerRef.current;
-    if (!serverId || !uri) { setNavigationNotice("语言服务尚未就绪，无法跳转定义。"); return; }
+    if (!serverId || !uri) return;
     const word = view.state.wordAt(position);
-    if (!word) { setNavigationNotice("当前位置没有可跳转的符号。"); return; }
+    if (!word) return;
     const line = view.state.doc.lineAt(word.from);
     const source: NavigationSource = { filePath, line: line.number - 1, character: word.from - line.from };
     const requestId = ++navigationRequestRef.current;
-    setNavigationNotice("");
     try {
       const locations = await languageClientStore.definition(serverId, uri, { line: source.line, character: source.character });
       if (requestId !== navigationRequestRef.current || identityRef.current.root !== root || identityRef.current.filePath !== filePath) return;
-      if (!locations.length) { setNavigationNotice("当前符号没有定义位置。"); return; }
+      if (!locations.length) return;
       navigationCallbacksRef.current.onNavigateLocation?.(locations[0], source);
     } catch (reason) {
-      if (requestId === navigationRequestRef.current) setNavigationNotice(String(reason));
+      if (requestId === navigationRequestRef.current) addActivity({ kind: "file", severity: "error", title: "无法跳转到定义", detail: String(reason), projectId, referenceId: filePath });
     }
   }
 
   async function requestReferencesAt(view: EditorView, position: number) {
     const serverId = lspServerRef.current;
-    if (!serverId || !uri) { setNavigationNotice("语言服务尚未就绪，无法查找引用。"); return; }
+    if (!serverId || !uri) return;
     const word = view.state.wordAt(position);
-    if (!word) { setNavigationNotice("当前位置没有可查找引用的符号。"); return; }
+    if (!word) return;
     const line = view.state.doc.lineAt(word.from);
     const source: NavigationSource = { filePath, line: line.number - 1, character: word.from - line.from };
     const requestId = ++navigationRequestRef.current;
-    setNavigationNotice("正在查找引用…");
     try {
       const locations = await languageClientStore.references(serverId, uri, { line: source.line, character: source.character });
       if (requestId !== navigationRequestRef.current || identityRef.current.root !== root || identityRef.current.filePath !== filePath) return;
-      setNavigationNotice(locations.length ? `找到 ${locations.length} 个引用。` : "没有找到引用。");
       navigationCallbacksRef.current.onReferenceLocations?.(locations, source);
     } catch (reason) {
-      if (requestId === navigationRequestRef.current) setNavigationNotice(String(reason));
+      if (requestId === navigationRequestRef.current) addActivity({ kind: "file", severity: "error", title: "查找引用失败", detail: String(reason), projectId, referenceId: filePath });
     }
   }
 
-  const load = useCallback(async (external = false) => {
+  const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current;
     setLoading(true);
     setError("");
@@ -188,7 +184,6 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
       setFileRevision(file.revision ?? undefined);
       setLanguage(detectLanguage(filePath));
       setRevision((value) => value + 1);
-      if (external) setExternalNotice("文件已从磁盘重新加载。");
     } catch (reason) {
       if (requestId === loadRequestRef.current) setError(String(reason));
     } finally {
@@ -196,7 +191,7 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
     }
   }, [filePath, root]);
 
-  useEffect(() => { navigationRequestRef.current += 1; setExternalContent(null); setExternalNotice(""); setNavigationNotice(""); setContent(""); setOriginal(""); setFileRevision(undefined); setError(""); setRevision((value) => value + 1); void load(); /* file identity drives the editor */ }, [load]);
+  useEffect(() => { navigationRequestRef.current += 1; setExternalContent(null); setContent(""); setOriginal(""); setFileRevision(undefined); setError(""); setRevision((value) => value + 1); void load(); /* file identity drives the editor */ }, [load]);
   useEffect(() => {
     const onCommand = (event: Event) => {
       if (!active || !editorActive || !editorViewRef.current) return;
@@ -204,11 +199,15 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
       if (event.type === "simpl-ssh:editor-definition") void requestDefinitionAt(view, view.state.selection.main.head);
       if (event.type === "simpl-ssh:editor-references") void requestReferencesAt(view, view.state.selection.main.head);
       if (event.type === "simpl-ssh:editor-format") void formatDocument(view);
+      if (event.type === "simpl-ssh:editor-save" && dirtyRef.current) void save();
+      if (event.type === "simpl-ssh:editor-reload" && !dirtyRef.current) void load();
     };
     window.addEventListener("simpl-ssh:editor-definition", onCommand);
     window.addEventListener("simpl-ssh:editor-references", onCommand);
     window.addEventListener("simpl-ssh:editor-format", onCommand);
-    return () => { window.removeEventListener("simpl-ssh:editor-definition", onCommand); window.removeEventListener("simpl-ssh:editor-references", onCommand); window.removeEventListener("simpl-ssh:editor-format", onCommand); };
+    window.addEventListener("simpl-ssh:editor-save", onCommand);
+    window.addEventListener("simpl-ssh:editor-reload", onCommand);
+    return () => { window.removeEventListener("simpl-ssh:editor-definition", onCommand); window.removeEventListener("simpl-ssh:editor-references", onCommand); window.removeEventListener("simpl-ssh:editor-format", onCommand); window.removeEventListener("simpl-ssh:editor-save", onCommand); window.removeEventListener("simpl-ssh:editor-reload", onCommand); };
   }, [active, editorActive, filePath, root]);
   useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false); }, [dirty, onDirtyChange]);
 
@@ -217,7 +216,7 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
     const view = new EditorView({
       state: EditorState.create({
         doc: contentRef.current,
-        extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap, { key: "F12", run: (current) => { void requestDefinitionAt(current, current.state.selection.main.head); return true; } }, { key: "Shift-F12", run: (current) => { void requestReferencesAt(current, current.state.selection.main.head); return true; } }, { key: "Shift-Alt-f", run: (current) => { void formatDocument(current); return true; } }, { key: "F2", run: (current) => { const pos = current.state.selection.main.head; const word = current.state.wordAt(pos); if (word) setRenameState({ initialName: current.state.sliceDoc(word.from, word.to), position: pos }); return true; } }]), semanticField, lintGutter(), ...(uri ? [...(codeCompletion ? [lspCompletionExtension({ getServerId: () => lspServerRef.current, uri })] : []), ...(hoverEnabled ? [lspHoverExtension({ getServerId: () => lspServerRef.current, uri })] : []), ...(signatureHelp ? lspSignatureExtension({ getServerId: () => lspServerRef.current, uri }) : [])] : []), ...(syntaxHighlighting && languageHighlighting[language] !== false ? cmExtension(language) : []), ...(bracketMatchingEnabled ? [bracketMatching()] : []), ...(highlightActiveLineEnabled ? [highlightActiveLine()] : []), ...(showWhitespace ? [highlightWhitespace()] : []), oneDark, EditorView.lineWrapping, EditorView.domEventHandlers({ click: (event, current) => { const mouse = event as MouseEvent; if (mouse.button !== 0) return false; const position = current.posAtCoords({ x: mouse.clientX, y: mouse.clientY }); if (position == null) return false; if (mouse.altKey && !mouse.metaKey && !mouse.ctrlKey) { mouse.preventDefault(); current.dispatch({ selection: current.state.selection.addRange(EditorSelection.cursor(position)) }); return true; } if ((mouse.metaKey || mouse.ctrlKey) && !mouse.altKey) { mouse.preventDefault(); void requestDefinitionAt(current, position); return true; } return false; } }), EditorView.updateListener.of((update) => { if (update.docChanged) { const next = update.state.doc.toString(); setContent(next); lspVersionRef.current += 1; if (lspServerRef.current && uri) void languageClientStore.changeDocument(lspServerRef.current, uri, next, lspVersionRef.current).catch(() => undefined); } })],
+        extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap, { key: "F12", run: (current) => { void requestDefinitionAt(current, current.state.selection.main.head); return true; } }, { key: "Shift-F12", run: (current) => { void requestReferencesAt(current, current.state.selection.main.head); return true; } }, { key: "Shift-Alt-f", run: (current) => { void formatDocument(current); return true; } }, { key: "F2", run: (current) => { const pos = current.state.selection.main.head; const word = current.state.wordAt(pos); if (word) setRenameState({ initialName: current.state.sliceDoc(word.from, word.to), position: pos }); return true; } }]), semanticField, lintGutter(), ...(uri ? [...(codeCompletion ? [lspCompletionExtension({ getServerId: () => lspServerRef.current, uri })] : []), ...(hoverEnabled ? [lspHoverExtension({ getServerId: () => lspServerRef.current, uri, language })] : []), ...(signatureHelp ? lspSignatureExtension({ getServerId: () => lspServerRef.current, uri }) : [])] : []), ...(syntaxHighlighting && languageHighlighting[language] !== false ? cmExtension(language) : []), ...(bracketMatchingEnabled ? [bracketMatching()] : []), ...(highlightActiveLineEnabled ? [highlightActiveLine()] : []), ...(showWhitespace ? [highlightWhitespace()] : []), oneDark, EditorView.lineWrapping, EditorView.domEventHandlers({ click: (event, current) => { const mouse = event as MouseEvent; if (mouse.button !== 0) return false; const position = current.posAtCoords({ x: mouse.clientX, y: mouse.clientY }); if (position == null) return false; if (mouse.altKey && !mouse.metaKey && !mouse.ctrlKey) { mouse.preventDefault(); current.dispatch({ selection: current.state.selection.addRange(EditorSelection.cursor(position)) }); return true; } if ((mouse.metaKey || mouse.ctrlKey) && !mouse.altKey) { mouse.preventDefault(); void requestDefinitionAt(current, position); return true; } return false; } }), EditorView.updateListener.of((update) => { if (update.docChanged) { const next = update.state.doc.toString(); setContent(next); lspVersionRef.current += 1; if (lspServerRef.current && uri) void languageClientStore.changeDocument(lspServerRef.current, uri, next, lspVersionRef.current).catch(() => undefined); } })],
       }),
       parent: hostRef.current,
     });
@@ -256,7 +255,20 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
       }
     }).catch(() => undefined);
     return () => { disposed = true; const serverId = lspServerRef.current; if (serverId) void languageClientStore.closeDocument(serverId, uri); lspServerRef.current = undefined; setLspServerId(undefined); onDiagnosticsChangeRef.current?.(filePath, []); };
-  }, [error, filePath, language, loading, lspRetryNonce, matchingOverride, matchingPlugin, matchingPluginOverride, matchingServer, missing, pluginOverrides, projectId, root, semanticHighlighting, uri]);
+  }, [error, filePath, language, loading, matchingOverride, matchingPlugin, matchingPluginOverride, matchingServer, missing, pluginOverrides, projectId, root, semanticHighlighting, uri]);
+
+  useEffect(() => {
+    if (!lsp.state?.error) return;
+    addActivity({
+      id: `lsp:${projectId ?? root}:${matchingPlugin?.id ?? matchingServer?.id ?? language}:${lsp.state.error}`,
+      kind: "file",
+      severity: "error",
+      title: "语言服务启动失败",
+      detail: lsp.state.error,
+      projectId,
+      referenceId: filePath,
+    });
+  }, [addActivity, filePath, language, lsp.state?.error, matchingPlugin?.id, matchingServer?.id, projectId, root]);
 
   // 编辑器内诊断可视化：诊断变化或编辑器重建后重灌 lint 状态。
   useEffect(() => {
@@ -306,7 +318,7 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
       const others = files.filter((file) => file.path !== filePath);
       if (others.length) onApplyEditsRef.current?.(others, filePath);
     } catch (reason) {
-      setNavigationNotice(String(reason));
+      addActivity({ kind: "file", severity: "error", title: "符号重命名失败", detail: String(reason), projectId, referenceId: filePath });
     }
   }
 
@@ -331,7 +343,6 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
       if (!isCurrent()) return;
       setFileRevision(refreshed.revision ?? undefined);
       if (lspServerRef.current && uri) void languageClientStore.saveDocument(lspServerRef.current, uri, targetContent).catch(() => undefined);
-      setExternalNotice("已保存到磁盘。");
     } catch (reason) {
       if (isCurrent()) setError(String(reason));
     } finally {
@@ -360,7 +371,7 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
         const disk = await invokeWithTimeout(invoke<RemoteFileContent>("project_read_file", { root, relativePath: filePath }), "project_read_file");
         if (requestId !== loadRequestRef.current || identityRef.current.root !== root || identityRef.current.filePath !== filePath) return;
         if (!dirtyRef.current) {
-          setContent(disk.content); setOriginal(disk.content); setFileRevision(disk.revision ?? undefined); setRevision((value) => value + 1); setExternalNotice("文件已根据外部修改自动重新加载。");
+          setContent(disk.content); setOriginal(disk.content); setFileRevision(disk.revision ?? undefined); setRevision((value) => value + 1);
         } else {
           setExternalContent(disk.content); setExternalRevision(disk.revision ?? undefined);
         }
@@ -373,24 +384,19 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
 
   function useDiskVersion() {
     if (externalContent === null) return;
-    setContent(externalContent); setOriginal(externalContent); setFileRevision(externalRevision); setExternalContent(null); setExternalNotice("已使用磁盘上的最新版本。"); setRevision((value) => value + 1);
+    setContent(externalContent); setOriginal(externalContent); setFileRevision(externalRevision); setExternalContent(null); setRevision((value) => value + 1);
   }
 
   function keepCurrentVersion() {
     setFileRevision(externalRevision);
     setExternalContent(null);
-    setExternalNotice("已保留当前修改；下次保存会覆盖刚才看到的磁盘版本。");
   }
 
   if (loading) return <LoadingState label="正在打开本地文件…" />;
   if (error && !content) return <ErrorState label="无法打开文件" message={error} onRetry={() => void load()} />;
   return <div className="local-editor-pane">
-    <div className="local-editor-head"><button className="icon-btn" aria-label="返回上一个位置" title="返回上一个位置 (Alt/Option ←)" disabled={!canNavigateBack} onClick={onNavigateBack}><ArrowLeft size={14} /></button><button className="icon-btn" aria-label="前进到下一个位置" title="前进到下一个位置" disabled={!canNavigateForward} onClick={onNavigateForward}><ArrowRight size={14} /></button><span title={filePath}>{filePath}</span><span>{languageLabel(language)}</span>{syntaxHighlighting && languageHighlighting[language] === false && <span className="editor-lsp-status" title="已在设置中关闭该语言的语法高亮">语法关闭</span>}{(matchingServer || matchingPlugin) && <><span className={`editor-lsp-status ${lsp.state?.status ?? "unknown"}`} title={lsp.state?.error || matchingPlugin?.name || matchingServer?.command}>LSP {matchingPlugin?.name ?? matchingServer?.name} · {lsp.state?.status === "ready" ? "就绪" : lsp.state?.status === "starting" ? "启动中" : lsp.state?.status === "crashed" ? "启动失败" : lsp.state?.status === "exited" ? "已退出" : "未启动"}{semanticHighlighting === "off" ? " · 语义关闭" : lsp.diagnostics.length > 0 ? ` · ${lsp.diagnostics.length} 个问题` : ""}</span>{lsp.state?.status !== "ready" && lsp.state?.status !== "starting" && <button className="icon-btn" aria-label="启动或重试语言服务" title={lsp.state?.error || "启动或重试语言服务"} onClick={() => setLspRetryNonce((value) => value + 1)}><RefreshCw size={14} /></button>}</>}{dirty && <em>● 未保存</em>}<button className="icon-btn" title={dirty ? "请先保存后再重新加载" : "重新加载文件"} disabled={dirty || missing} onClick={() => void load()}><RefreshCw size={14} /></button><button className="icon-btn" title={missing ? "文件不存在，无法保存" : "保存 (⌘S)"} disabled={!dirty || saving || missing} onClick={() => void save()}><Save size={14} /></button></div>
     {missing && <div className="editor-error-bar">文件已不存在或已被移动，请重新定位文件后再保存。</div>}
     {error && <div className="editor-error-bar">{error}</div>}
-    {lsp.state?.error && <div className="editor-error-bar" role="status">语言服务未启动：{lsp.state.error} <button className="btn btn-ghost" onClick={() => setLspRetryNonce((value) => value + 1)}>重试</button></div>}
-    {externalNotice && <div className="editor-external-notice">{externalNotice}</div>}
-    {navigationNotice && <div className="editor-navigation-notice" role="status">{navigationNotice}</div>}
     <div className="editor-host" ref={hostRef} />
     {externalContent !== null && <ExternalChangeDialog diskContent={externalContent} currentContent={content} onKeep={keepCurrentVersion} onUseDisk={useDiskVersion} onClose={() => setExternalContent(null)} />}
     {renameState && <TextInputDialog title="重命名符号" label="新名称" initialValue={renameState.initialName} confirmLabel="重命名" onClose={() => setRenameState(null)} onConfirm={(name) => { const view = editorViewRef.current; if (view) void requestRenameAt(view, renameState.position, name); setRenameState(null); }} />}

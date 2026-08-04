@@ -6,11 +6,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub struct AppDatabase {
     connection: Mutex<Connection>,
@@ -32,6 +33,12 @@ pub struct SecretCleanupItem {
     pub credential_kind: String,
     pub attempts: u32,
     pub last_error: Option<String>,
+}
+
+pub struct EncryptedCredentialRecord {
+    pub nonce: Vec<u8>,
+    pub ciphertext: Vec<u8>,
+    pub schema_version: i64,
 }
 
 impl AppDatabase {
@@ -140,6 +147,19 @@ impl AppDatabase {
                    jump_profile_id TEXT REFERENCES connection_profiles(id) ON DELETE SET NULL,
                    payload TEXT NOT NULL
                  );
+                 CREATE TABLE IF NOT EXISTS credential_vault_metadata (
+                   key TEXT PRIMARY KEY,
+                   value BLOB NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS credential_vault (
+                   profile_id TEXT NOT NULL REFERENCES connection_profiles(id) ON DELETE CASCADE,
+                   credential_kind TEXT NOT NULL CHECK(credential_kind IN ('password','passphrase')),
+                   nonce BLOB NOT NULL,
+                   ciphertext BLOB NOT NULL,
+                   schema_version INTEGER NOT NULL DEFAULT 1,
+                   updated_at TEXT NOT NULL,
+                   PRIMARY KEY(profile_id, credential_kind)
+                 );
                  CREATE TABLE IF NOT EXISTS projects (
                    id TEXT PRIMARY KEY,
                    group_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE,
@@ -207,13 +227,15 @@ impl AppDatabase {
              CREATE TABLE secret_cleanup_queue(profile_id TEXT NOT NULL, credential_kind TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(profile_id, credential_kind));
              CREATE TABLE resource_groups(id TEXT PRIMARY KEY, kind TEXT NOT NULL, parent_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, name TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL);
              CREATE TABLE connection_profiles(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, jump_profile_id TEXT REFERENCES connection_profiles(id) ON DELETE SET NULL, position INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL);
+             CREATE TABLE credential_vault_metadata(key TEXT PRIMARY KEY, value BLOB NOT NULL);
+             CREATE TABLE credential_vault(profile_id TEXT NOT NULL REFERENCES connection_profiles(id) ON DELETE CASCADE, credential_kind TEXT NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, schema_version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, PRIMARY KEY(profile_id, credential_kind));
              CREATE TABLE projects(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, position INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL);
              CREATE TABLE project_remote_workspaces(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, profile_id TEXT NOT NULL REFERENCES connection_profiles(id) ON DELETE CASCADE, remote_path TEXT NOT NULL, PRIMARY KEY(project_id, profile_id));
              CREATE TABLE project_agent_bindings(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, preset_id TEXT NOT NULL, position INTEGER NOT NULL, command_override TEXT, PRIMARY KEY(project_id, preset_id));
              CREATE TABLE command_snippets(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE SET NULL, payload TEXT NOT NULL);
              CREATE TABLE workspace_snapshots(id INTEGER PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
              PRAGMA foreign_keys = ON;
-             PRAGMA user_version = 3;"
+             PRAGMA user_version = 4;"
         ).unwrap();
         Self {
             connection: Mutex::new(connection),
@@ -272,6 +294,119 @@ impl AppDatabase {
         transaction.commit().map_err(|error| error.to_string())
     }
 
+    pub fn credential_install_salt(&self) -> Result<[u8; 32], String> {
+        let mut connection = self.connection.lock().map_err(|error| error.to_string())?;
+        if let Some(value) = connection
+            .query_row(
+                "SELECT value FROM credential_vault_metadata WHERE key='install_salt'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+        {
+            return value
+                .try_into()
+                .map_err(|_| "凭据仓库安装盐长度无效".to_string());
+        }
+        let mut salt = [0u8; 32];
+        OsRng.fill_bytes(&mut salt);
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO credential_vault_metadata(key, value) VALUES('install_salt', ?1)",
+                params![salt.as_slice()],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(salt)
+    }
+
+    pub fn credential_read(
+        &self,
+        profile_id: &str,
+        kind: &str,
+    ) -> Result<Option<EncryptedCredentialRecord>, String> {
+        self.connection
+            .lock()
+            .map_err(|error| error.to_string())?
+            .query_row(
+                "SELECT nonce, ciphertext, schema_version FROM credential_vault WHERE profile_id=?1 AND credential_kind=?2",
+                params![profile_id, kind],
+                |row| {
+                    Ok(EncryptedCredentialRecord {
+                        nonce: row.get(0)?,
+                        ciphertext: row.get(1)?,
+                        schema_version: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn credential_write(
+        &self,
+        profile_id: &str,
+        kind: &str,
+        nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<(), String> {
+        let mut connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO credential_vault(profile_id, credential_kind, nonce, ciphertext, schema_version, updated_at) VALUES(?1, ?2, ?3, ?4, 1, ?5)
+                 ON CONFLICT(profile_id, credential_kind) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, schema_version=1, updated_at=excluded.updated_at",
+                params![profile_id, kind, nonce, ciphertext, chrono::Utc::now().to_rfc3339()],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn credential_delete(&self, profile_id: &str, kind: &str) -> Result<(), String> {
+        self.connection
+            .lock()
+            .map_err(|error| error.to_string())?
+            .execute(
+                "DELETE FROM credential_vault WHERE profile_id=?1 AND credential_kind=?2",
+                params![profile_id, kind],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn credential_migration_complete(&self) -> Result<bool, String> {
+        Ok(self
+            .connection
+            .lock()
+            .map_err(|error| error.to_string())?
+            .query_row(
+                "SELECT value FROM credential_vault_metadata WHERE key='keychain_migration_v1'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .is_some_and(|value| value == b"complete"))
+    }
+
+    pub fn set_credential_migration_complete(&self) -> Result<(), String> {
+        self.connection
+            .lock()
+            .map_err(|error| error.to_string())?
+            .execute(
+                "INSERT INTO credential_vault_metadata(key, value) VALUES('keychain_migration_v1', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![b"complete".as_slice()],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
     pub fn delete(&self, name: &str) -> Result<(), String> {
         let mut connection = self.connection.lock().map_err(|error| error.to_string())?;
         let transaction = connection
@@ -288,6 +423,7 @@ impl AppDatabase {
         transaction.commit().map_err(|error| error.to_string())
     }
 
+    /// 旧 keyring 清理队列兼容一个版本；新凭据不会再进入该队列。
     pub fn enqueue_secret_cleanup(&self, profile_id: &str, kind: &str) -> Result<(), String> {
         self.connection
             .lock()

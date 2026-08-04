@@ -493,7 +493,7 @@ export function ConnectDialog({
                     checked={save}
                     onChange={(e) => setSave(e.target.checked)}
                   />
-                  保存这个连接（凭据存入系统钥匙串，不落明文）
+                  保存这个连接（凭据加密存入本机应用仓库，不落明文）
                 </label>
               )}
 

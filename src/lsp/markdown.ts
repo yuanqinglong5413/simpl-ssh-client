@@ -1,4 +1,8 @@
 import type { LspHover } from "./LanguageClientStore";
+import { EditorState } from "@codemirror/state";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { classHighlighter, highlightTree } from "@lezer/highlight";
+import { cmExtension } from "../utils/editorLanguages";
 
 type MarkedString = string | { language?: string; value?: string };
 type Block = { type: "code"; lang: string; value: string } | { type: "text"; value: string };
@@ -8,6 +12,8 @@ function collectMarkedStrings(contents: LspHover["contents"]): MarkedString[] {
   if (contents == null) return [];
   if (typeof contents === "string") return [contents];
   if (Array.isArray(contents)) return contents as MarkedString[];
+  const markup = contents as { kind?: string; value?: string };
+  if (markup.kind === "markdown" || markup.kind === "plaintext") return [markup.value ?? ""];
   const obj = contents as { language?: string; value?: string };
   return [{ language: obj.language, value: obj.value ?? "" }];
 }
@@ -53,10 +59,42 @@ function renderInline(text: string): Node[] {
   return nodes;
 }
 
-function codeBlock(value: string, lang: string): HTMLElement {
+function normalizeLanguage(lang: string, fallback: string): string {
+  const value = (lang || fallback).trim().toLowerCase();
+  return ({ js: "javascript", jsx: "javascript", ts: "typescript", tsx: "typescript", py: "python", rs: "rust", golang: "go", sh: "shell", bash: "shell", zsh: "shell" } as Record<string, string>)[value] ?? value;
+}
+
+function appendHighlightedCode(code: HTMLElement, value: string, language: string): boolean {
+  const extensions = cmExtension(language);
+  if (!extensions.length) return false;
+  try {
+    const state = EditorState.create({ doc: value, extensions });
+    let cursor = 0;
+    const tree = ensureSyntaxTree(state, state.doc.length, 120) ?? syntaxTree(state);
+    highlightTree(tree, classHighlighter, (from, to, classes) => {
+      if (from > cursor) code.appendChild(document.createTextNode(value.slice(cursor, from)));
+      const span = document.createElement("span");
+      span.className = classes;
+      span.textContent = value.slice(from, to);
+      code.appendChild(span);
+      cursor = to;
+    });
+    if (cursor < value.length) code.appendChild(document.createTextNode(value.slice(cursor)));
+    return true;
+  } catch {
+    code.replaceChildren();
+    return false;
+  }
+}
+
+function codeBlock(value: string, lang: string, fallbackLanguage: string): HTMLElement {
   const code = document.createElement("code");
-  if (lang) code.className = `language-${lang}`;
-  code.textContent = value;
+  const language = normalizeLanguage(lang, fallbackLanguage);
+  code.className = `language-${language || "text"}`;
+  if (!appendHighlightedCode(code, value, language)) {
+    code.classList.add("plain-text");
+    code.textContent = value;
+  }
   const pre = document.createElement("pre");
   pre.appendChild(code);
   return pre;
@@ -72,12 +110,12 @@ function appendText(host: HTMLElement, value: string) {
 }
 
 /** 渲染 LSP Hover 内容为安全 DOM（无 innerHTML）。 */
-export function renderHoverContent(contents: LspHover["contents"]): HTMLElement {
+export function renderHoverContent(contents: LspHover["contents"], fallbackLanguage = "text"): HTMLElement {
   const root = document.createElement("div");
   root.className = "lsp-hover";
   for (const item of collectMarkedStrings(contents)) {
-    if (typeof item === "string") for (const block of splitBlocks(item)) block.type === "code" ? root.appendChild(codeBlock(block.value, block.lang)) : appendText(root, block.value);
-    else root.appendChild(codeBlock(item.value ?? "", item.language ?? ""));
+    if (typeof item === "string") for (const block of splitBlocks(item)) block.type === "code" ? root.appendChild(codeBlock(block.value, block.lang, fallbackLanguage)) : appendText(root, block.value);
+    else root.appendChild(codeBlock(item.value ?? "", item.language ?? "", fallbackLanguage));
   }
   return root;
 }
