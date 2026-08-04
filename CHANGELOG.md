@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-04
+
+### 修复
+- **Release 流水线**：`v0.12/v0.13` 未配置 updater 私钥时继续生成各平台安装包并关闭自动更新产物；`v0.14+` 仍强制要求有效的更新签名和托管 LSP 公钥。
+
 ## [0.12.0] - 2026-08-04
 
 ### 新增
@@ -170,7 +175,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.10.1...v0.11.0
