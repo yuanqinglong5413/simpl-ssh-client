@@ -1,13 +1,13 @@
 //! 保存的连接配置。
 //!
-//! 元数据（名称/主机/端口/用户/认证方式/私钥路径）存本地 JSON；
+//! 元数据（名称/主机/端口/用户/认证方式/私钥路径）存本地 SQLite；
 //! 密码与私钥 passphrase 存 OS 钥匙串（keyring），**不落明文**。
 //!
 //! 钥匙串里的密码读出后会进入一个**内存加密缓存**（见 [`super::secrets`]），
 //! 24h 内重复连接同一配置直接命中缓存，不再访问钥匙串——避免 macOS 上
 //! 每次读取都弹系统授权框。缓存随进程退出而清空。
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::auth::{SshAuth, SshConnectParams};
 use super::secrets::PasswordCache;
+use super::storage::AppDatabase;
 
 const SERVICE: &str = "simpl-ssh";
 
@@ -84,21 +85,17 @@ pub struct ConnectionProfile {
 /// 连接配置存储。作为 Tauri State 注入。
 pub struct ProfileStore {
     profiles: Mutex<Vec<ConnectionProfile>>,
-    path: PathBuf,
+    database: Arc<AppDatabase>,
     cache: PasswordCache,
 }
 
 impl ProfileStore {
-    /// 从磁盘加载（文件不存在则空）。
-    pub fn new() -> Self {
-        let path = profile_path();
-        let profiles = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+    /// 从 SQLite 加载（首次启动会兼容导入旧 JSON）。
+    pub fn new(database: Arc<AppDatabase>) -> Self {
+        let profiles = database.load("profiles").ok().flatten().unwrap_or_default();
         Self {
             profiles: Mutex::new(profiles),
-            path,
+            database,
             cache: PasswordCache::new(),
         }
     }
@@ -116,7 +113,7 @@ impl ProfileStore {
             .cloned()
     }
 
-    /// 保存一个新配置：凭据进钥匙串，元数据进 JSON。
+    /// 保存一个新配置：凭据进钥匙串，元数据进 SQLite 事务。
     pub async fn save(&self, input: ProfileInput) -> Result<ConnectionProfile, String> {
         let id = Uuid::new_v4().to_string();
         self.store_credentials(
@@ -152,9 +149,23 @@ impl ProfileStore {
     /// 导入的私钥认证 profile 需用户后续补充 passphrase。
     pub async fn import_many(&self, inputs: Vec<ProfileInput>) -> Result<usize, String> {
         let mut guard = self.profiles.lock().await;
+        let ids = inputs
+            .iter()
+            .map(|input| (input.name.clone(), Uuid::new_v4().to_string()))
+            .collect::<std::collections::HashMap<_, _>>();
         let mut count = 0;
         for input in inputs {
-            let id = Uuid::new_v4().to_string();
+            let id = ids
+                .get(&input.name)
+                .cloned()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            let jump_profile_id =
+                input
+                    .jump_profile_id
+                    .and_then(|value| match value.strip_prefix("ssh-config:") {
+                        Some(alias) => ids.get(alias).cloned(),
+                        None => Some(value),
+                    });
             guard.push(ConnectionProfile {
                 id,
                 name: input.name,
@@ -164,7 +175,7 @@ impl ProfileStore {
                 auth_method: input.auth_method,
                 private_key_path: input.private_key_path,
                 group_id: input.group_id,
-                jump_profile_id: input.jump_profile_id,
+                jump_profile_id,
                 encoding: input.encoding,
                 keepalive_interval: input.keepalive_interval,
                 startup_command: input.startup_command,
@@ -188,7 +199,7 @@ impl ProfileStore {
 
         let prev_method = guard[idx].auth_method.clone();
         if prev_method != input.auth_method {
-            self.clear_credentials(id, &prev_method);
+            let _ = self.clear_credentials(id, &prev_method);
             match &input.auth_method {
                 AuthMethod::Password => {
                     let pw = input
@@ -266,11 +277,109 @@ impl ProfileStore {
             auth
         };
         if let Some(method) = auth_method {
-            self.clear_credentials(id, &method);
+            let kind = if method == AuthMethod::Password {
+                "password"
+            } else {
+                "passphrase"
+            };
+            self.database.enqueue_secret_cleanup(id, kind)?;
+            if self.clear_credentials(id, &method).is_ok() {
+                self.database.complete_secret_cleanup(id, kind)?;
+            }
         }
         self.cache.remove(id).await;
         self.cache.remove(&passphrase_key(id)).await;
         Ok(())
+    }
+
+    pub async fn count_in_groups(&self, group_ids: &[String]) -> usize {
+        self.profiles
+            .lock()
+            .await
+            .iter()
+            .filter(|profile| {
+                profile
+                    .group_id
+                    .as_ref()
+                    .is_some_and(|id| group_ids.contains(id))
+            })
+            .count()
+    }
+
+    pub async fn delete_in_groups(&self, group_ids: &[String]) -> Result<usize, String> {
+        let removed = {
+            let mut guard = self.profiles.lock().await;
+            let removed = guard
+                .iter()
+                .filter(|profile| {
+                    profile
+                        .group_id
+                        .as_ref()
+                        .is_some_and(|id| group_ids.contains(id))
+                })
+                .map(|profile| (profile.id.clone(), profile.auth_method.clone()))
+                .collect::<Vec<_>>();
+            guard.retain(|profile| {
+                !profile
+                    .group_id
+                    .as_ref()
+                    .is_some_and(|id| group_ids.contains(id))
+            });
+            if !removed.is_empty() {
+                self.persist(&guard)?;
+            }
+            removed
+        };
+        for (id, method) in &removed {
+            let kind = if *method == AuthMethod::Password {
+                "password"
+            } else {
+                "passphrase"
+            };
+            self.database.enqueue_secret_cleanup(id, kind)?;
+            if self.clear_credentials(id, method).is_ok() {
+                self.database.complete_secret_cleanup(id, kind)?;
+            }
+            self.cache.remove(id).await;
+            self.cache.remove(&passphrase_key(id)).await;
+        }
+        Ok(removed.len())
+    }
+
+    /// 重试之前因钥匙串锁定或系统错误而未完成的凭据清理。
+    /// 应用记录已经删除，因此失败只保留在持久化队列中，不会把连接记录“复活”。
+    pub fn retry_secret_cleanup(&self) -> Result<usize, String> {
+        let pending = self.database.pending_secret_cleanup()?;
+        let mut remaining = 0;
+        for item in pending {
+            let method = match item.credential_kind.as_str() {
+                "password" => AuthMethod::Password,
+                "passphrase" => AuthMethod::PrivateKey,
+                other => {
+                    self.database.fail_secret_cleanup(
+                        &item.profile_id,
+                        &item.credential_kind,
+                        &format!("未知凭据类型：{other}"),
+                    )?;
+                    remaining += 1;
+                    continue;
+                }
+            };
+            match self.clear_credentials(&item.profile_id, &method) {
+                Ok(()) => self
+                    .database
+                    .complete_secret_cleanup(&item.profile_id, &item.credential_kind)?,
+                Err(error) => {
+                    self.database.fail_secret_cleanup(
+                        &item.profile_id,
+                        &item.credential_kind,
+                        &error,
+                    )?;
+                    remaining += 1;
+                }
+            }
+        }
+        Ok(remaining)
     }
 
     /// 删除分组时，清除所有 profile 对该分组的引用。
@@ -287,6 +396,16 @@ impl ProfileStore {
             self.persist(&guard)?;
         }
         Ok(())
+    }
+
+    pub async fn move_to_group(&self, id: &str, group_id: Option<String>) -> Result<(), String> {
+        let mut guard = self.profiles.lock().await;
+        let profile = guard
+            .iter_mut()
+            .find(|profile| profile.id == id)
+            .ok_or("连接配置不存在")?;
+        profile.group_id = group_id;
+        self.persist(&guard)
     }
 
     /// 删除跳板 profile 时，清除其他配置对它的引用。
@@ -438,40 +557,33 @@ impl ProfileStore {
         Ok(())
     }
 
-    fn clear_credentials(&self, id: &str, auth_method: &AuthMethod) {
-        match auth_method {
+    fn clear_credentials(&self, id: &str, auth_method: &AuthMethod) -> Result<(), String> {
+        let result = match auth_method {
             AuthMethod::Password => {
-                if let Ok(entry) = keyring::Entry::new(SERVICE, id) {
-                    let _ = entry.delete_credential();
-                }
+                let entry = keyring::Entry::new(SERVICE, id).map_err(|error| error.to_string())?;
+                entry.delete_credential()
             }
             AuthMethod::PrivateKey => {
-                if let Ok(entry) = keyring::Entry::new(SERVICE, &passphrase_key(id)) {
-                    let _ = entry.delete_credential();
-                }
+                let entry = keyring::Entry::new(SERVICE, &passphrase_key(id))
+                    .map_err(|error| error.to_string())?;
+                entry.delete_credential()
             }
+        };
+        match result {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.to_string()),
         }
     }
 
     fn persist(&self, profiles: &[ConnectionProfile]) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let s = serde_json::to_string_pretty(profiles).map_err(|e| e.to_string())?;
-        std::fs::write(&self.path, s).map_err(|e| e.to_string())?;
-        Ok(())
+        self.database.save("profiles", profiles)
     }
 }
 
 impl Default for ProfileStore {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(AppDatabase::default()))
     }
-}
-
-fn profile_path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("simpl-ssh").join("profiles.json")
 }
 
 fn passphrase_key(id: &str) -> String {

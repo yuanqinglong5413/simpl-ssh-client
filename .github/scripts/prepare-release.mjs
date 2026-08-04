@@ -1,6 +1,6 @@
 /**
  * Release 构建前预处理：
- * - 校验 TAURI_SIGNING_PRIVATE_KEY 格式，无效时关闭 updater 产物
+ * - 正式发布必须具备更新签名；v0.14+ 还必须编译可信 LSP 目录公钥。
  */
 import fs from 'node:fs';
 
@@ -25,12 +25,20 @@ if (!githubEnv) {
 }
 
 if (!updaterOk) {
-  console.log('Updater 签名密钥未配置或格式无效，关闭 createUpdaterArtifacts / latest.json。');
-  const confPath = 'src-tauri/tauri.conf.json';
-  const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
-  conf.bundle.createUpdaterArtifacts = false;
-  fs.writeFileSync(confPath, `${JSON.stringify(conf, null, 2)}\n`);
-  fs.appendFileSync(githubEnv, 'INCLUDE_UPDATER_JSON=false\n');
-} else {
-  fs.appendFileSync(githubEnv, 'INCLUDE_UPDATER_JSON=true\n');
+  console.error('正式发布缺少有效的 TAURI_SIGNING_PRIVATE_KEY；已拒绝生成不可验证的更新产物。');
+  process.exit(1);
+}
+fs.appendFileSync(githubEnv, 'INCLUDE_UPDATER_JSON=true\n');
+
+const tag = process.env.GITHUB_REF_NAME ?? '';
+const match = tag.match(/^v?(\d+)\.(\d+)/);
+const requiresManagedLsp = match && (Number(match[1]) > 0 || Number(match[2]) >= 14);
+if (requiresManagedLsp) {
+  const encoded = process.env.SIMPL_SSH_LSP_CATALOG_PUBLIC_KEY ?? '';
+  let valid = false;
+  try { valid = Buffer.from(encoded, 'base64').length === 32; } catch { valid = false; }
+  if (!valid) {
+    console.error('v0.14+ 正式发布必须配置 32 字节 Ed25519 LSP_CATALOG_PUBLIC_KEY。');
+    process.exit(1);
+  }
 }

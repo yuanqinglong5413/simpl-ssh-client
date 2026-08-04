@@ -1,12 +1,14 @@
-//! 常用命令片段（snippets）存储：JSON 持久化（仿 [`super::project::ProjectStore`]）。
+//! 常用命令片段（snippets）存储：SQLite 事务持久化。
 //!
 //! 片段 = 标题 + 命令文本 + 可选标签 + 可选分组。供命令面板 / 快捷命令栏一键注入终端。
-//! 路径：`config_dir/simpl-ssh/snippets.json`
+//! 旧 `snippets.json` 仅作为首次迁移来源和只读备份保留。
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+use super::storage::AppDatabase;
 
 /// 一个常用命令片段。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,26 +36,22 @@ pub struct SnippetInput {
 /// 片段存储。作为 Tauri State 注入。
 pub struct SnippetStore {
     snippets: Mutex<Vec<Snippet>>,
-    path: PathBuf,
+    database: Arc<AppDatabase>,
 }
 
 impl Default for SnippetStore {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(AppDatabase::default()))
     }
 }
 
 impl SnippetStore {
     /// 从磁盘加载（文件不存在则空）。
-    pub fn new() -> Self {
-        let path = snippet_path();
-        let snippets = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+    pub fn new(database: Arc<AppDatabase>) -> Self {
+        let snippets = database.load("snippets").ok().flatten().unwrap_or_default();
         Self {
             snippets: Mutex::new(snippets),
-            path,
+            database,
         }
     }
 
@@ -100,16 +98,6 @@ impl SnippetStore {
     }
 
     fn persist(&self, snippets: &[Snippet]) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let json = serde_json::to_string_pretty(snippets).map_err(|e| e.to_string())?;
-        std::fs::write(&self.path, json).map_err(|e| e.to_string())?;
-        Ok(())
+        self.database.save("snippets", snippets)
     }
-}
-
-fn snippet_path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("simpl-ssh").join("snippets.json")
 }

@@ -72,6 +72,10 @@ impl SftpManager {
     pub async fn close(&self, session_id: &str) {
         self.sessions.lock().await.remove(session_id);
     }
+
+    pub async fn close_all(&self) {
+        self.sessions.lock().await.clear();
+    }
 }
 
 /// 把 `SystemTime` 格式化成本地可读字符串。

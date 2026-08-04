@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-04
+
+### 新增
+- **可靠数据层**：引入版本化 SQLite 存储与旧 JSON 事务迁移，连接、项目、资源分组、工作区和命令片段写入更可靠，并支持备份、恢复与钥匙串清理重试。
+- **真实资源树**：连接与项目支持任意层级分组、祖先路径搜索、键盘导航、递归删除影响预览和持久排序。
+- **终端与文件工作区**：同一 SSH 标签内可在终端、SFTP 与分屏模式间切换，终端内容与 PTY 生命周期不会因打开文件面板而丢失。
+- **LSP 插件目录**：插件目录作为独立工作区标签，补充托管运行时状态、校验、取消、回滚与安全回退入口。
+
+### 变更
+- **退出行为**：关闭应用会保存工作区并依次停止任务、LSP、本地 PTY、Agent、转发和 SSH 连接，不再默认隐藏到后台。
+- **发布质量**：统一版本一致性、前端测试、生产构建、Bundle 预算、Rust 测试、格式和 Clippy 质量门禁。
+
+### 修复
+- **工作区可靠性**：修复恢复竞态、失效标签提示、旧请求覆盖新项目、后台监听释放及错误被静默吞掉的问题。
+- **终端稳定性**：收口 WebSocket/PTY 清理、隐藏标签首次尺寸、TUI 重绘和渲染器回退状态，降低残影、空白和后台进程残留。
+- **高风险操作**：分组删除、传输覆盖、同步与递归操作展示完整影响范围，失败保留为可处理活动。
+
 ## [0.11.1] - 2026-08-03
 
 ### 修复
@@ -153,7 +170,10 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.11.1...v0.12.0
+[0.11.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.10.1...v0.11.0
 [0.8.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.7.0...v0.8.0

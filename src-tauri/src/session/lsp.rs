@@ -91,6 +91,7 @@ impl LspManager {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        sanitize_environment(&mut process);
         #[cfg(unix)]
         process.process_group(0);
         let mut child = match process.spawn() {
@@ -209,6 +210,34 @@ impl LspManager {
                 let _ = kill.send(());
             }
             handle.pending.lock().await.clear();
+        }
+    }
+
+    /// 真实退出时停止全部语言服务。先取出键列表，避免持有映射锁等待子进程。
+    pub async fn stop_all(&self) {
+        let ids = self
+            .servers
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.stop(&id).await;
+        }
+    }
+
+    pub async fn stop_matching(&self, marker: &str) {
+        let ids = self
+            .servers
+            .lock()
+            .await
+            .keys()
+            .filter(|id| id.contains(marker))
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.stop(&id).await;
         }
     }
 
@@ -390,7 +419,7 @@ async fn wait_child(
     root: String,
     state: Arc<Mutex<LspState>>,
 ) {
-    let result = tokio::select! { status = child.wait() => status.map(|status| status.code()), _ = &mut kill_rx => { let _ = child.kill().await; let _ = child.wait().await; Ok(None) } };
+    let result = tokio::select! { status = child.wait() => status.map(|status| status.code()), _ = &mut kill_rx => { terminate_child_tree(&mut child).await; Ok(None) } };
     let (status, error) = match result {
         Ok(Some(0)) => ("exited", None),
         Ok(code) => ("crashed", Some(format!("语言服务退出，退出码：{code:?}"))),
@@ -404,6 +433,40 @@ async fn wait_child(
     };
     *state.lock().await = next.clone();
     emit_state(&app, &next);
+}
+
+fn sanitize_environment(command: &mut Command) {
+    for (key, _) in std::env::vars_os() {
+        let upper = key.to_string_lossy().to_ascii_uppercase();
+        if upper.contains("TOKEN")
+            || upper.contains("PASSWORD")
+            || upper.contains("PASSWD")
+            || upper.contains("SECRET")
+            || upper.contains("API_KEY")
+            || upper.contains("PRIVATE_KEY")
+            || upper == "SSH_AUTH_SOCK"
+        {
+            command.env_remove(key);
+        }
+    }
+}
+
+async fn terminate_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // SAFETY: the process is created in its own group above; a negative PID targets only it.
+        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+    }
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .await;
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 #[cfg(test)]

@@ -498,8 +498,9 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
         <TransferConfirmDialog
           direction={pendingTransfer.direction}
           count={pendingTransfer.names.length}
-          source={pendingTransfer.paths ? "已拖入的本地文件" : pendingTransfer.direction === "upload" ? localCwd : cwd}
-          destination={pendingTransfer.direction === "upload" ? cwd : localCwd}
+          source={pendingTransfer.paths ? pendingTransfer.paths.join("\n") : pendingTransfer.direction === "upload" ? pendingTransfer.names.map(localJoin).join("\n") : pendingTransfer.names.map(join).join("\n")}
+          destination={pendingTransfer.direction === "upload" ? pendingTransfer.names.map((name) => join(name)).join("\n") : pendingTransfer.names.map(localJoin).join("\n")}
+          production={environment === "production"}
           onClose={() => setPendingTransfer(null)}
           onConfirm={async (overwrite) => {
             const pending = pendingTransfer;

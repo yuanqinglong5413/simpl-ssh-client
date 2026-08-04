@@ -9,13 +9,15 @@ type Props = {
   count: number;
   source: string;
   destination: string;
+  production?: boolean;
   onClose: () => void;
   onConfirm: (overwrite: OverwriteChoice) => void;
 };
 
 /** 传输前明确目标与同名文件策略，所有选择会传给现有队列。 */
-export function TransferConfirmDialog({ direction, count, source, destination, onClose, onConfirm }: Props) {
+export function TransferConfirmDialog({ direction, count, source, destination, production = false, onClose, onConfirm }: Props) {
   const [overwrite, setOverwrite] = useState<OverwriteChoice>("ifNewer");
+  const [productionPhrase, setProductionPhrase] = useState("");
   const upload = direction === "upload";
   const dialogRef = useDialogFocus(true, onClose);
   return (
@@ -37,10 +39,11 @@ export function TransferConfirmDialog({ direction, count, source, destination, o
               <option value="overwrite">直接覆盖</option>
             </select>
           </div>
+          {production && (overwrite === "overwrite" || overwrite === "ifNewer") && <label className="field sftp-production-confirm">目标连接标记为生产环境。输入“生产”确认可能发生的覆盖<input value={productionPhrase} onChange={(event) => setProductionPhrase(event.target.value)} placeholder="生产" /></label>}
         </div>
         <div className="dialog-foot">
           <button type="button" className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button type="button" className="btn btn-primary" onClick={() => onConfirm(overwrite)}>加入队列</button>
+          <button type="button" className="btn btn-primary" disabled={production && (overwrite === "overwrite" || overwrite === "ifNewer") && productionPhrase.trim() !== "生产"} onClick={() => onConfirm(overwrite)}>加入队列</button>
         </div>
       </div>
     </div>

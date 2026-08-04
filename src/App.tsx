@@ -47,12 +47,12 @@ import type {
   SplitDir,
   SplitNode,
   Tab,
+  TerminalWorkspaceView,
 } from "./types";
 import "./App.css";
 
 // 仅在用户打开对应工作区时加载重量级面板。终端、编辑器与 LSP 依赖不再阻塞
 // 连接列表和开始页的首次可交互时间。
-const SplitView = lazy(() => import("./components/SplitView").then((module) => ({ default: module.SplitView })));
 const SftpPane = lazy(() => import("./components/SftpPane").then((module) => ({ default: module.SftpPane })));
 const MonitorPane = lazy(() => import("./components/MonitorPane").then((module) => ({ default: module.MonitorPane })));
 const EditorPane = lazy(() => import("./components/EditorPane").then((module) => ({ default: module.EditorPane })));
@@ -64,6 +64,8 @@ const SnippetManager = lazy(() => import("./components/SnippetManager").then((mo
 const BroadcastDialog = lazy(() => import("./components/BroadcastDialog").then((module) => ({ default: module.BroadcastDialog })));
 const UnsavedChangesDialog = lazy(() => import("./components/UnsavedChangesDialog").then((module) => ({ default: module.UnsavedChangesDialog })));
 const ProjectWorkbench = lazy(() => import("./components/ProjectWorkbench").then((module) => ({ default: module.ProjectWorkbench })));
+const TerminalFileWorkspace = lazy(() => import("./components/TerminalFileWorkspace").then((module) => ({ default: module.TerminalFileWorkspace })));
+const LspPluginCatalogPane = lazy(() => import("./components/LspPluginCatalogPane").then((module) => ({ default: module.LspPluginCatalogPane })));
 
 type PendingAgentLaunch = {
   project: Project;
@@ -111,6 +113,7 @@ function App() {
   const [profilesState, setProfilesState] = useState<ProfilesLoadState>("loading");
   const [profilesError, setProfilesError] = useState("");
   const [groups, setGroups] = useState<ProfileGroup[]>([]);
+  const [projectGroups, setProjectGroups] = useState<ProfileGroup[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -137,6 +140,12 @@ function App() {
   const [dirtyEditorTabs, setDirtyEditorTabs] = useState<Set<string>>(new Set());
   const [dirtyEditorFiles, setDirtyEditorFiles] = useState<Record<string, string[]>>({});
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
+  const [shuttingDown, setShuttingDown] = useState(false);
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void listen<string>("app://shutdown-progress", (event) => setShuttingDown(event.payload !== "done")).then((unlisten) => { dispose = unlisten; });
+    return () => dispose?.();
+  }, []);
   useEffect(() => {
     invoke<Snippet[]>("snippet_list").then(setSnippets).catch((reason) => toast(`命令片段读取失败：${String(reason)}`, "error"));
   }, [toast]);
@@ -231,6 +240,11 @@ function App() {
     }
   };
 
+  const refreshProjectGroups = async () => {
+    try { setProjectGroups(await invoke<ProfileGroup[]>("resource_group_list", { kind: "project" })); }
+    catch (error) { showToast(String(error)); }
+  };
+
   const refreshProjects = async () => {
     try {
       setProjects(await invoke<Project[]>("project_list"));
@@ -243,6 +257,7 @@ function App() {
     refreshSessions();
     refreshProfiles();
     refreshGroups();
+    refreshProjectGroups();
     refreshProjects();
   }, []);
 
@@ -307,6 +322,7 @@ function App() {
     const normalizedRoot = remoteRoot?.trim() || undefined;
     const existing = tabs.find((t) => t.sessionId === s.id && t.kind === "terminal" && t.remoteRoot === normalizedRoot);
     if (existing) {
+      setTabs((current) => current.map((tab) => tab.id === existing.id ? { ...tab, terminalView: "terminal" } : tab));
       setActiveTabId(existing.id);
       return;
     }
@@ -323,6 +339,7 @@ function App() {
         paneId: crypto.randomUUID(),
         sessionId: s.id,
       },
+      terminalView: "terminal",
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
@@ -330,6 +347,20 @@ function App() {
 
   function openSftp(s: SessionInfo, initialPath?: string) {
     const normalizedRoot = initialPath?.trim() || undefined;
+    // 文件是当前 SSH 工作区的一部分，而不是另一个会话。优先复用同会话终端标签，
+    // 使终端的 PTY、滚动缓冲和正在运行的命令保持原样。
+    const terminal = tabs.find((tab) => tab.sessionId === s.id && tab.kind === "terminal" && tab.remoteRoot === normalizedRoot)
+      ?? tabs.find((tab) => tab.sessionId === s.id && tab.kind === "terminal");
+    if (terminal) {
+      setTabs((current) => current.map((tab) => tab.id === terminal.id ? {
+        ...tab,
+        remoteRoot: normalizedRoot ?? tab.remoteRoot,
+        sftpOpened: true,
+        terminalView: "files",
+      } : tab));
+      setActiveTabId(terminal.id);
+      return;
+    }
     const existing = tabs.find((t) => t.sessionId === s.id && t.kind === "sftp" && (t.remoteRoot ?? t.repoPath) === normalizedRoot);
     if (existing) {
       setActiveTabId(existing.id);
@@ -338,13 +369,24 @@ function App() {
     const tab: Tab = {
       id: crypto.randomUUID(),
       sessionId: s.id,
-      title: normalizedRoot ? `${s.user}@${s.host} · 文件 · ${normalizedRoot.split("/").filter(Boolean).pop() || normalizedRoot}` : `${s.user}@${s.host} · 文件`,
-      kind: "sftp",
+      title: normalizedRoot ? `${s.user}@${s.host} · ${normalizedRoot.split("/").filter(Boolean).pop() || normalizedRoot}` : `${s.user}@${s.host}`,
+      kind: "terminal",
       remoteRoot: normalizedRoot,
       profileId: sessionProfileRef.current.get(s.id),
+      terminalView: "files",
+      sftpOpened: true,
+      layout: { kind: "leaf", paneId: crypto.randomUUID(), sessionId: s.id },
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
+  }
+
+  function setTerminalWorkspaceView(tabId: string, view: TerminalWorkspaceView) {
+    setTabs((current) => current.map((tab) => tab.id === tabId ? {
+      ...tab,
+      terminalView: view,
+      sftpOpened: tab.sftpOpened || view !== "terminal",
+    } : tab));
   }
 
   function openMonitor(s: SessionInfo) {
@@ -523,14 +565,26 @@ function App() {
   }
 
   function performCloseTab(id: string) {
-    setTabs((prev) => prev.filter((t) => t.id !== id));
-    setActiveTabId((prev) => (prev === id ? null : prev));
+    setTabs((prev) => {
+      const index = prev.findIndex((tab) => tab.id === id);
+      const next = prev.filter((tab) => tab.id !== id);
+      setActiveTabId((active) => active === id ? next[Math.min(Math.max(index, 0), next.length - 1)]?.id ?? null : active);
+      return next;
+    });
     setDirtyEditorTabs((previous) => {
       const next = new Set(previous);
       next.delete(id);
       return next;
     });
     setDirtyEditorFiles((previous) => { const next = { ...previous }; delete next[id]; return next; });
+  }
+
+  function openLspCatalog() {
+    const existing = tabs.find((tab) => tab.kind === "lsp-catalog");
+    if (existing) { setActiveTabId(existing.id); return; }
+    const tab: Tab = { id: crypto.randomUUID(), sessionId: "local:lsp-catalog", title: "LSP 插件目录", kind: "lsp-catalog", source: "local" };
+    setTabs((current) => [...current, tab]);
+    setActiveTabId(tab.id);
   }
 
   function closeTab(id: string) {
@@ -593,6 +647,42 @@ function App() {
   const hasWorkspaceRecovery = workspaceRestoreIssues.length > 0 || workspaceRestoreLoadError !== null;
   const hasTransientWorkspaceIssue = workspaceRestoreIssues.some((issue) => issue.kind === "transient");
   const { add: addActivity } = useActivity();
+  useEffect(() => {
+    let alive = true;
+    void invoke<{
+      persistent: boolean;
+      migration_warnings: string[];
+      pending_secret_cleanup: Array<{ profile_id: string; credential_kind: string; attempts: number; last_error?: string | null }>;
+    }>("storage_status").then((status) => {
+      if (!alive) return;
+      if (!status.persistent) addActivity({
+        id: "storage-memory-fallback",
+        kind: "workspace",
+        severity: "error",
+        title: "本机数据库当前不可写",
+        detail: "应用已进入内存安全模式，本次修改不会跨重启保留。请复制存储诊断并检查配置目录权限。",
+      });
+      status.migration_warnings.forEach((warning, index) => addActivity({
+        id: `storage-warning:${index}:${warning}`,
+        kind: "workspace",
+        severity: "warning",
+        title: "本机数据需要检查",
+        detail: warning,
+      }));
+      if (status.pending_secret_cleanup.length > 0) {
+        addActivity({
+          id: `credential-cleanup:${status.pending_secret_cleanup.map((item) => `${item.profile_id}:${item.attempts}`).join("|")}`,
+          kind: "workspace",
+          severity: "warning",
+          title: `${status.pending_secret_cleanup.length} 项钥匙串凭据待清理`,
+          detail: "应用记录已删除，不会恢复；可在设置 → 更新与关于 → 本机数据与诊断中重试。",
+        });
+      }
+    }).catch((error) => {
+      if (alive) addActivity({ id: `storage-status:${String(error)}`, kind: "workspace", severity: "error", title: "无法读取本机存储状态", detail: String(error) });
+    });
+    return () => { alive = false; };
+  }, [addActivity]);
   useEffect(() => {
     for (const issue of workspaceRestoreIssues) {
       addActivity({ id: `workspace:${issue.tab.id}:${issue.kind}`, kind: "workspace", severity: "error", title: `工作区标签未恢复：${issue.tab.title}`, detail: issue.message, referenceId: issue.tab.id });
@@ -765,32 +855,43 @@ function App() {
     }
   }
 
-  async function createGroup(name: string) {
+  async function createGroup(name: string, parentId?: string | null, kind: "connection" | "project" = "connection") {
     try {
-      await invoke("group_create", { name });
-      await refreshGroups();
+      await invoke("resource_group_create", { kind, parentId: parentId ?? null, name });
+      if (kind === "connection") await refreshGroups(); else await refreshProjectGroups();
     } catch (e) {
       showToast(String(e));
     }
   }
 
-  async function renameGroup(id: string, name: string) {
+  async function renameGroup(id: string, name: string, kind: "connection" | "project" = "connection") {
     try {
       await invoke("group_rename", { id, name });
-      await refreshGroups();
+      if (kind === "connection") await refreshGroups(); else await refreshProjectGroups();
     } catch (e) {
       showToast(String(e));
     }
   }
 
-  async function deleteGroup(id: string) {
+  async function deleteGroup(id: string, kind: "connection" | "project" = "connection") {
     try {
-      await invoke("group_delete", { id });
-      await refreshGroups();
+      await invoke("resource_group_delete", { id, confirmed: true });
+      if (kind === "connection") await refreshGroups(); else await refreshProjectGroups();
       await refreshProfiles();
+      await refreshProjects();
     } catch (e) {
       showToast(String(e));
     }
+  }
+
+  async function moveResourceGroup(id: string, parentId: string | null, kind: "connection" | "project") {
+    try { await invoke("resource_group_move", { id, parentId, position: 2_147_483_647 }); if (kind === "connection") await refreshGroups(); else await refreshProjectGroups(); }
+    catch (error) { showToast(String(error)); }
+  }
+
+  async function moveResourceItem(id: string, groupId: string | null, kind: "connection" | "project") {
+    try { await invoke("resource_item_move", { kind, id, groupId }); if (kind === "connection") await refreshProfiles(); else await refreshProjects(); }
+    catch (error) { showToast(String(error)); }
   }
 
   async function disconnect(id: string) {
@@ -932,6 +1033,8 @@ function App() {
           onCreateGroup={createGroup}
           onRenameGroup={renameGroup}
           onDeleteGroup={deleteGroup}
+          onMoveGroup={(id, parentId) => moveResourceGroup(id, parentId, "connection")}
+          onMoveProfile={(id, groupId) => moveResourceItem(id, groupId, "connection")}
           onNew={() => setShowConnect(true)}
           onImportSshConfig={importSshConfig}
           onModeChange={setMode}
@@ -940,6 +1043,12 @@ function App() {
         <ProjectSidebar
           projects={projects}
           profiles={profiles}
+          groups={projectGroups}
+          onCreateGroup={(name, parentId) => createGroup(name, parentId, "project")}
+          onRenameGroup={(id, name) => renameGroup(id, name, "project")}
+          onDeleteGroup={(id) => deleteGroup(id, "project")}
+          onMoveGroup={(id, parentId) => moveResourceGroup(id, parentId, "project")}
+          onMoveProject={(id, groupId) => moveResourceItem(id, groupId, "project")}
           onConnectProject={openProjectWorkspace}
           onOpenLocalTerminal={openProjectLocalTerminal}
           onOpenRemote={openProjectRemote}
@@ -970,7 +1079,7 @@ function App() {
           onNew={mode === "ssh" ? () => setShowConnect(true) : undefined}
         />
 
-        {activeTab?.kind !== "project-workbench" && <WorkspaceActions
+        {activeTab?.kind !== "project-workbench" && activeTab?.kind !== "lsp-catalog" && <WorkspaceActions
           session={activeSession}
           activeKind={activeTab?.kind ?? null}
           environment={profiles.find((profile) => profile.id === activeTab?.profileId)?.environment}
@@ -1043,7 +1152,9 @@ function App() {
                 className={`pane ${t.id === activeTabId ? "active" : ""}`}
               >
                 <Suspense fallback={<LoadingState className="pane-loading" label="正在加载工作区…" />}>
-                {t.kind === "project-workbench" ? (
+                {t.kind === "lsp-catalog" ? (
+                  <LspPluginCatalogPane />
+                ) : t.kind === "project-workbench" ? (
                   <ProjectWorkbenchBoundary projectName={t.title}>
                   <ProjectWorkbench
                     project={projects.find((project) => project.id === t.projectId) ?? { id: t.projectId ?? t.id, name: t.title, local_path: t.localPath ?? "", group_id: null, created_at: "", linked_profiles: [], remote_workspaces: [], agent_bindings: [] }}
@@ -1114,14 +1225,31 @@ function App() {
                     active={t.id === activeTabId}
                   />
                 ) : (
-                  <SplitView
+                  <TerminalFileWorkspace
                     layout={t.layout!}
                     sessionId={t.sessionId}
-                    onChange={(n) => updateTabLayout(t.id, n)}
+                    initialPath={t.remoteRoot}
+                    environment={profiles.find((profile) => profile.id === t.profileId)?.environment}
+                    view={t.terminalView ?? "terminal"}
+                    sftpOpened={Boolean(t.sftpOpened)}
+                    splitDirection={t.terminalFileSplitDirection ?? "horizontal"}
+                    splitRatio={Math.max(0.25, Math.min(0.75, t.terminalFileSplitRatio ?? 0.58))}
+                    active={t.id === activeTabId}
+                    startupCommand={t.startupCommand}
+                    onViewChange={(view) => setTerminalWorkspaceView(t.id, view)}
+                    onSplitChange={(direction, ratio) => {
+                      setTabs((current) => current.map((tab) => tab.id === t.id
+                        ? {
+                            ...tab,
+                            terminalFileSplitDirection: direction,
+                            terminalFileSplitRatio: Math.max(0.25, Math.min(0.75, ratio)),
+                          }
+                        : tab));
+                    }}
+                    onLayoutChange={(layout) => updateTabLayout(t.id, layout)}
                     onCloseAll={() => closeTab(t.id)}
                     onConnectionLost={handleConnectionLost}
-                    startupCommand={t.startupCommand}
-                    active={t.id === activeTabId}
+                    onFileOpen={(path) => openEditor(t.sessionId, path)}
                   />
                 )}
                 </Suspense>
@@ -1164,6 +1292,7 @@ function App() {
       {showSettings && <Suspense fallback={null}><SettingsDialog
         open
         onClose={() => setShowSettings(false)}
+        onOpenLspCatalog={() => { setShowSettings(false); openLspCatalog(); }}
       /></Suspense>}
 
       {showSnippets && (
@@ -1228,6 +1357,8 @@ function App() {
           </div>
         </div>
       )}
+
+      {shuttingDown && <div className="shutdown-overlay" role="status" aria-live="assertive"><div><LoadingState label="正在关闭连接并保存工作区…" detail="终端、任务与语言服务将安全停止，应用不会留在后台。" /></div></div>}
 
       {hostKey && (
         <Suspense fallback={null}><HostKeyDialog

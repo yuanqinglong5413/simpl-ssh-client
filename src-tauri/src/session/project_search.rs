@@ -78,6 +78,12 @@ impl ProjectSearchManager {
             cancelled.store(true, Ordering::Relaxed);
         }
     }
+
+    pub fn cancel_all(&self) {
+        for cancelled in self.jobs.lock().unwrap().values() {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
 }
 
 fn scan(

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Bot, Check, CircleHelp, Code2, Download, Keyboard,
   LayoutDashboard, MonitorCog, Palette, PanelLeft, PlugZap, RefreshCw,
@@ -22,7 +23,7 @@ import { ConfirmDialog } from "./DialogPrimitives";
 import { KnownHostsDialog } from "./KnownHostsDialog";
 import { LANGUAGE_DEFINITIONS } from "../utils/editorLanguages";
 
-type Props = { open: boolean; onClose: () => void };
+type Props = { open: boolean; onClose: () => void; onOpenLspCatalog?: () => void };
 type ResetTarget = PreferenceCategoryId | "all";
 
 const CATEGORY_ICONS: Record<PreferenceCategoryId, LucideIcon> = {
@@ -45,7 +46,7 @@ const SHORTCUT_GROUPS = [
 ] as const;
 
 /** IDEA 式偏好设置窗口：分类导航 + 全局搜索；所有修改立即持久化。 */
-export function SettingsDialog({ open, onClose }: Props) {
+export function SettingsDialog({ open, onClose, onOpenLspCatalog }: Props) {
   const { settings, updateSettings, resetSettings } = useSettings();
   const { checking, message: updateMsg, checkForUpdates } = useUpdater();
   const { themeId, themes, setTheme, resetTheme } = useTheme();
@@ -69,6 +70,8 @@ export function SettingsDialog({ open, onClose }: Props) {
   const [pluginAvailability, setPluginAvailability] = useState<LspPluginAvailability[]>([]);
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [pluginError, setPluginError] = useState("");
+  const [appVersion, setAppVersion] = useState("…");
+  const [storageMessage, setStorageMessage] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -76,6 +79,7 @@ export function SettingsDialog({ open, onClose }: Props) {
     setQuery("");
   }, [open]);
   useEffect(() => { if (!open) return; setPluginError(""); void Promise.all([invoke<LspPluginManifest[]>("lsp_catalog_list"), invoke<InstalledLspPlugin[]>("lsp_plugin_status"), invoke<LspPluginAvailability[]>("lsp_plugin_check").catch(() => [])]).then(([catalog, installed, availability]) => { setPluginCatalog(catalog); setInstalledPlugins(installed); setPluginAvailability(availability); updateSettings({ installedLspPlugins: installed }); }).catch((error) => setPluginError(String(error))); }, [open, updateSettings]);
+  useEffect(() => { if (open) void getVersion().then(setAppVersion).catch(() => setAppVersion("未知")); }, [open]);
 
   const searchMatches = useMemo(() => searchPreferenceCategories(query), [query]);
   const visibleCategories = query.trim() ? searchMatches : [activeCategory];
@@ -163,6 +167,11 @@ export function SettingsDialog({ open, onClose }: Props) {
                   setTheme={setTheme}
                   checking={checking}
                   updateMessage={updateMsg}
+                  appVersion={appVersion}
+                  storageMessage={storageMessage}
+                  onBackupStorage={async () => { try { const path = await invoke<string>("storage_backup"); setStorageMessage(`数据库备份已创建：${path}`); } catch (error) { setStorageMessage(`备份失败：${String(error)}`); } }}
+                  onCopyStorageDiagnostic={async () => { try { const status = await invoke("storage_status"); await navigator.clipboard.writeText(JSON.stringify(status, null, 2)); setStorageMessage("存储诊断已复制，不包含凭据或项目文件内容。"); } catch (error) { setStorageMessage(`复制诊断失败：${String(error)}`); } }}
+                  onRetrySecretCleanup={async () => { try { const remaining = await invoke<number>("storage_retry_secret_cleanup"); setStorageMessage(remaining === 0 ? "钥匙串清理队列已处理完成。" : `仍有 ${remaining} 项钥匙串凭据无法删除，可稍后重试。`); } catch (error) { setStorageMessage(`重试凭据清理失败：${String(error)}`); } }}
                   onCheckUpdates={() => checkForUpdates(false)}
                   agentName={agentName}
                   agentCommand={agentCommand}
@@ -204,9 +213,10 @@ export function SettingsDialog({ open, onClose }: Props) {
                       setPluginBusy(null);
                     }
                   }}
-                  onPluginInstall={async (plugin) => { setPluginBusy(plugin.id); setPluginError(""); try { const installed = await invoke<InstalledLspPlugin>("lsp_plugin_install", { pluginId: plugin.id, version: plugin.version }); setInstalledPlugins((items) => { const next = [...items.filter((item) => !(item.pluginId === installed.pluginId && item.version === installed.version)), installed]; updateSettings({ installedLspPlugins: next }); return next; }); } catch (error) { setPluginError(String(error)); } finally { setPluginBusy(null); } }}
+                  onPluginInstall={async (plugin) => { setPluginBusy(plugin.id); setPluginError(""); try { const installed = await invoke<InstalledLspPlugin>("lsp_plugin_install", { pluginId: plugin.id, version: plugin.version }); const availability = await invoke<LspPluginAvailability[]>("lsp_plugin_check").catch(() => []); setInstalledPlugins((items) => { const next = [...items.filter((item) => !(item.pluginId === installed.pluginId && item.version === installed.version)), installed]; updateSettings({ installedLspPlugins: next }); return next; }); setPluginAvailability(availability); } catch (error) { setPluginError(String(error)); } finally { setPluginBusy(null); } }}
                   onPluginToggle={async (plugin, enabled) => { const installed = installedPlugins.find((item) => item.pluginId === plugin.id && item.version === plugin.version); if (!installed) return; try { const next = await invoke<InstalledLspPlugin[]>(enabled ? "lsp_plugin_enable" : "lsp_plugin_disable", { pluginId: plugin.id, version: plugin.version, priority: installed.priority }); setInstalledPlugins(next); updateSettings({ installedLspPlugins: next }); } catch (error) { setPluginError(String(error)); } }}
                   onPluginUninstall={async (plugin) => { try { await invoke("lsp_plugin_uninstall", { pluginId: plugin.id, version: plugin.version }); setInstalledPlugins((items) => { const next = items.filter((item) => !(item.pluginId === plugin.id && item.version === plugin.version)); updateSettings({ installedLspPlugins: next }); return next; }); } catch (error) { setPluginError(String(error)); } }}
+                  onOpenLspCatalog={onOpenLspCatalog}
                   onKnownHosts={() => setKnownHostsOpen(true)}
                   onReset={() => setPendingReset(id)}
                 />
@@ -246,6 +256,11 @@ type CategoryViewProps = {
   setTheme: ReturnType<typeof useTheme>["setTheme"];
   checking: boolean;
   updateMessage: string;
+  appVersion: string;
+  storageMessage: string;
+  onBackupStorage: () => void;
+  onCopyStorageDiagnostic: () => void;
+  onRetrySecretCleanup: () => void;
   onCheckUpdates: () => void;
   agentName: string;
   agentCommand: string;
@@ -272,6 +287,7 @@ type CategoryViewProps = {
   onPluginInstall: (plugin: LspPluginManifest) => void;
   onPluginToggle: (plugin: LspPluginManifest, enabled: boolean) => void;
   onPluginUninstall: (plugin: LspPluginManifest) => void;
+  onOpenLspCatalog?: () => void;
   onKnownHosts: () => void;
   onReset: () => void;
 };
@@ -319,7 +335,7 @@ function CategorySettings(props: CategoryViewProps) {
       <SettingCard title="新增本地语言服务" description="命令直接启动，不经过 shell；不会自动安装或执行项目命令。"><div className="preference-language-create"><input value={props.languageServerName} onChange={(event) => props.onLanguageServerName(event.target.value)} placeholder="名称，例如 Pyright" /><input value={props.languageServerCommand} onChange={(event) => props.onLanguageServerCommand(event.target.value)} placeholder="可执行文件，例如 pyright-langserver" /><input value={props.languageServerLanguages} onChange={(event) => props.onLanguageServerLanguages(event.target.value)} placeholder="语言，例如 python" /><input value={props.languageServerArgs} onChange={(event) => props.onLanguageServerArgs(event.target.value)} placeholder="参数（空格分隔）" /><input value={props.languageServerMarkers} onChange={(event) => props.onLanguageServerMarkers(event.target.value)} placeholder="根标记（逗号分隔，例如 pyproject.toml）" /><button type="button" className="btn btn-primary" disabled={!props.languageServerName.trim() || !props.languageServerCommand.trim() || !props.languageServerLanguages.trim()} onClick={() => { const server: LanguageServerConfig = { id: crypto.randomUUID(), name: props.languageServerName.trim(), command: props.languageServerCommand.trim(), languages: props.languageServerLanguages.split(",").map((value) => value.trim()).filter(Boolean), args: props.languageServerArgs.split(/\s+/).filter(Boolean), rootMarkers: props.languageServerMarkers.split(",").map((value) => value.trim()).filter(Boolean), enabled: true }; updateSettings({ languageServers: [...settings.languageServers, server] }); props.onLanguageServerName(""); props.onLanguageServerCommand(""); props.onLanguageServerLanguages(""); props.onLanguageServerArgs(""); props.onLanguageServerMarkers(""); }}><Code2 size={14} /> 添加服务</button></div></SettingCard>
       <div className="preference-language-list">{settings.languageServers.length === 0 ? <div className="preferences-empty compact"><Code2 size={20} /><strong>还没有语言服务</strong><span>可以添加任意本地 LSP 命令，例如 pyright-langserver、rust-analyzer 或自定义服务。</span></div> : settings.languageServers.map((server) => <div key={server.id} className="preference-language-row"><div className="preference-language-edit"><input aria-label={`${server.name} 名称`} value={server.name} onChange={(event) => updateSettings({ languageServers: settings.languageServers.map((item) => item.id === server.id ? { ...item, name: event.target.value } : item) })} /><input aria-label={`${server.name} 命令`} value={server.command} onChange={(event) => updateSettings({ languageServers: settings.languageServers.map((item) => item.id === server.id ? { ...item, command: event.target.value } : item) })} /><input aria-label={`${server.name} 语言`} value={server.languages.join(", ")} onChange={(event) => updateSettings({ languageServers: settings.languageServers.map((item) => item.id === server.id ? { ...item, languages: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) } : item) })} /><small>{server.rootMarkers.length ? `根标记：${server.rootMarkers.join(", ")}` : "未设置根标记"}</small></div><Toggle checked={server.enabled} onChange={(enabled) => updateSettings({ languageServers: settings.languageServers.map((item) => item.id === server.id ? { ...item, enabled } : item) })} label={server.enabled ? "启用" : "停用"} /><button type="button" className="icon-btn danger" aria-label={`删除 ${server.name}`} onClick={() => props.onDeleteLanguageServer(server)}><X size={15} /></button></div>)}</div>
     </>;
-    case "lspPlugins": return <SettingCard title="LSP 插件目录" description="插件目录只会在你主动刷新时联网；托管运行时经过签名与哈希校验，系统服务仍可作为回退。"><div className="preference-plugin-list"><div className="preference-inline"><button type="button" className="btn btn-ghost" disabled={props.pluginBusy === "catalog"} onClick={() => void props.onPluginRefresh()}><RefreshCw size={14} /> {props.pluginBusy === "catalog" ? "刷新目录中…" : "刷新受信任目录"}</button><small>不会自动下载或启用任何语言服务。</small></div>{props.pluginError && <p className="preference-status error">{props.pluginError}</p>}{props.pluginCatalog.map((plugin) => { const installed = props.installedPlugins.find((item) => item.pluginId === plugin.id && item.version === plugin.version); const availability = props.pluginAvailability.find((item) => item.pluginId === plugin.id && item.version === plugin.version); const systemAdapter = Object.keys(plugin.runtimes).length === 0; return <div className="preference-plugin-row" key={plugin.id}><div><strong>{plugin.name}</strong><small>{plugin.languages.map((language) => language.id).join(", ")} · v{plugin.version}{systemAdapter ? " · 系统适配器" : " · 托管运行时"}</small><span>{plugin.description}</span>{availability && <small className={`preference-plugin-availability ${availability.status}`} title={availability.executable ?? availability.detail}>{availability.status === "available" ? `✓ 可用 · ${availability.detail}` : availability.status === "unavailable" ? `! 环境不完整 · ${availability.detail}` : `× 未找到 · ${availability.detail}`}</small>}</div>{installed ? <><Toggle checked={installed.enabled} onChange={(enabled) => void props.onPluginToggle(plugin, enabled)} label={installed.enabled ? "已启用" : "已停用"} /><button type="button" className="btn btn-ghost" onClick={() => void props.onPluginUninstall(plugin)}>移除</button></> : <button type="button" className="btn btn-primary" disabled={props.pluginBusy === plugin.id} onClick={() => void props.onPluginInstall(plugin)}>{props.pluginBusy === plugin.id ? (systemAdapter ? "添加中…" : "安装中…") : (systemAdapter ? "登记系统服务" : "安装")}</button>}</div>; })}</div></SettingCard>;
+    case "lspPlugins": return <SettingCard title="LSP 插件目录" description="插件安装、版本、回滚与运行时诊断在独立工作区标签中管理，避免偏好设置变成任务面板。"><div className="preference-inline"><button type="button" className="btn btn-primary" onClick={props.onOpenLspCatalog}><PlugZap size={14} /> 在工作区打开插件目录</button><small>{props.installedPlugins.filter((item) => item.enabled).length} 个已启用 · 不会后台下载或自动执行项目命令</small></div></SettingCard>;
     case "connection": return <>
       <SettingCard title="自动重连" description="仅对通过已保存连接建立的 SSH 会话生效。"><Toggle checked={settings.autoReconnect} onChange={(checked) => updateSettings({ autoReconnect: checked })} label="断线后自动重连" /></SettingCard>
       <SettingCard title={`最大重连次数 · ${settings.maxReconnectAttempts}`} description="达到次数上限后会保留失败原因，不再继续重试。"><input type="range" min={1} max={10} disabled={!settings.autoReconnect} value={settings.maxReconnectAttempts} onChange={(event) => updateSettings({ maxReconnectAttempts: Number(event.target.value) })} /></SettingCard>
@@ -337,7 +353,8 @@ function CategorySettings(props: CategoryViewProps) {
     case "shortcuts": return <div className="preference-shortcuts">{SHORTCUT_GROUPS.map(([title, items]) => <SettingCard key={title} title={title} description="当前版本支持查看与搜索，快捷键映射不可修改。"><dl>{items.map(([label, shortcut]) => <div key={label}><dt>{label}</dt><dd><kbd>{shortcut}</kbd></dd></div>)}</dl></SettingCard>)}</div>;
     case "updates": return <>
       <SettingCard title="应用更新" description="从 GitHub Release 检查并安装新版本。"><div className="preference-inline"><Toggle checked={settings.checkUpdatesOnStart} onChange={(checked) => updateSettings({ checkUpdatesOnStart: checked })} label="启动时检查" /><button type="button" className="btn btn-ghost" disabled={props.checking} onClick={props.onCheckUpdates}><RefreshCw size={14} /> {props.checking ? "检查中…" : "立即检查"}</button></div>{props.updateMessage && <p className="preference-status">{props.updateMessage}</p>}</SettingCard>
-      <SettingCard title="关于 Simpl SSH" description="轻量级跨平台 SSH、SFTP 与远程开发工作台。"><div className="preference-about"><CircleHelp size={16} /><span>Simpl SSH v0.11.1</span></div></SettingCard>
+      <SettingCard title="关于 Simpl SSH" description="轻量级跨平台 SSH、SFTP 与远程开发工作台。"><div className="preference-about"><CircleHelp size={16} /><span>Simpl SSH v{props.appVersion}</span></div></SettingCard>
+      <SettingCard title="本机数据与诊断" description="连接结构和工作区存于 SQLite；凭据仍保存在系统钥匙串。诊断不包含密码、源码或终端输出。"><div className="preference-inline"><button className="btn btn-ghost" onClick={props.onBackupStorage}>创建数据库备份</button><button className="btn btn-ghost" onClick={props.onCopyStorageDiagnostic}>复制存储诊断</button><button className="btn btn-ghost" onClick={props.onRetrySecretCleanup}>重试凭据清理</button></div>{props.storageMessage && <p className="preference-status">{props.storageMessage}</p>}</SettingCard>
     </>;
   }
 }

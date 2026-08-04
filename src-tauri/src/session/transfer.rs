@@ -179,6 +179,22 @@ pub struct TransferQueue {
 }
 
 impl TransferQueue {
+    /// 停止接受/执行传输并取消当前队列。worker 会在下一个安全读写边界退出，
+    /// 不会强行截断正在落盘的单个数据块。
+    pub async fn shutdown(&self) {
+        self.desired_concurrency.store(0, Ordering::Release);
+        let tasks = self.tasks.lock().await;
+        for task in tasks.iter() {
+            task.cancel.store(true, Ordering::Release);
+            let mut status = task.status.lock().unwrap();
+            if matches!(*status, TransferStatus::Queued | TransferStatus::Paused) {
+                *status = TransferStatus::Cancelled;
+            }
+        }
+        drop(tasks);
+        self.notify.notify_waiters();
+    }
+
     /// 入队一个任务，返回其 id。
     #[allow(clippy::too_many_arguments)]
     pub async fn enqueue(
@@ -792,7 +808,7 @@ fn emit_progress(app: &AppHandle, task_id: &str, name: &str, transferred: u64, t
 }
 
 /// 上传覆盖决策：返回最终远端目标路径；None 表示跳过。
-/// Rename 暂按 Overwrite 处理（自动改名见后续）。
+/// 根据策略解析最终上传目标；Rename 会寻找第一个未占用的 `name (N).ext`。
 async fn resolve_upload_target(
     sftp: &SftpSession,
     remote: &str,

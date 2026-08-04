@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import type { ConnectionProfile, ProfileGroup } from "../types";
 import { ConfirmDialog, TextInputDialog } from "./DialogPrimitives";
+import { ResourceGroupDeleteDialog } from "./ResourceGroupDeleteDialog";
+import { handleTreeKeyboard } from "../utils/treeKeyboard";
 
 type Props = {
   profiles: ConnectionProfile[];
@@ -27,9 +29,11 @@ type Props = {
   onConnectProfile: (id: string) => void;
   onEditProfile: (profile: ConnectionProfile) => void;
   onDeleteProfile: (id: string) => void;
-  onCreateGroup: (name: string) => void;
+  onCreateGroup: (name: string, parentId?: string | null) => void;
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
+  onMoveGroup: (id: string, parentId: string | null) => void;
+  onMoveProfile: (id: string, groupId: string | null) => void;
   onNew: () => void;
   onImportSshConfig: () => void;
   onModeChange: (mode: "ssh" | "project") => void;
@@ -55,17 +59,19 @@ export function Sidebar({
   onCreateGroup,
   onRenameGroup,
   onDeleteGroup,
+  onMoveGroup,
+  onMoveProfile,
   onNew,
   onImportSshConfig,
   onModeChange,
 }: Props) {
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadCollapsedGroups("connection"));
   const [query, setQuery] = useState("");
   const [library, setLibrary] = useState<ProfileLibrary>(() => loadLibrary());
   const [filter, setFilter] = useState<"all" | "favorites" | "recent">("all");
   const [pendingProfileDeletion, setPendingProfileDeletion] = useState<ConnectionProfile | null>(null);
   const [groupDialog, setGroupDialog] = useState<
-    | { kind: "create" }
+    | { kind: "create"; parentId?: string | null }
     | { kind: "rename"; group: ProfileGroup }
     | { kind: "delete"; group: ProfileGroup }
     | null
@@ -86,6 +92,21 @@ export function Sidebar({
     () => [...groups].sort((a, b) => a.order - b.order),
     [groups]
   );
+  const visibleGroupIds = useMemo(() => {
+    if (!queryText && filter === "all") return new Set(groups.map((group) => group.id));
+    const byId = new Map(groups.map((group) => [group.id, group]));
+    const visible = new Set<string>();
+    const includeAncestors = (id?: string | null) => {
+      let current = id ? byId.get(id) : undefined;
+      while (current && !visible.has(current.id)) {
+        visible.add(current.id);
+        current = current.parent_id ? byId.get(current.parent_id) : undefined;
+      }
+    };
+    visibleProfiles.forEach((profile) => includeAncestors(profile.group_id));
+    if (queryText) groups.filter((group) => group.name.toLocaleLowerCase().includes(queryText)).forEach((group) => includeAncestors(group.id));
+    return visible;
+  }, [filter, groups, queryText, visibleProfiles]);
 
   const orderedVisibleProfiles = [...visibleProfiles].sort((a, b) => {
     if (filter === "recent") return library.recent.indexOf(a.id) - library.recent.indexOf(b.id);
@@ -114,11 +135,15 @@ export function Sidebar({
   }
 
   function toggleGroup(id: string) {
-    setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }));
+    setCollapsed((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      localStorage.setItem("simpl-ssh:tree:connection:collapsed", JSON.stringify(next));
+      return next;
+    });
   }
 
-  function handleCreateGroup() {
-    setGroupDialog({ kind: "create" });
+  function handleCreateGroup(parentId?: string | null) {
+    setGroupDialog({ kind: "create", parentId });
   }
 
   function handleRenameGroup(g: ProfileGroup, e: React.MouseEvent) {
@@ -131,7 +156,7 @@ export function Sidebar({
     setGroupDialog({ kind: "delete", group: g });
   }
 
-  function renderProfile(p: ConnectionProfile) {
+  function renderProfile(p: ConnectionProfile, depth = 0) {
     const connected = activeIds.has(p.id);
     const connecting = connectingIds.has(p.id);
     const favorite = library.favorites.includes(p.id);
@@ -140,7 +165,8 @@ export function Sidebar({
       <div
         key={p.id}
         className={`session-item ${connected ? "active" : ""}`}
-        role="button"
+        role="treeitem"
+        aria-level={depth + 1}
         tabIndex={0}
         onClick={() => {
           markRecent(p.id);
@@ -154,6 +180,8 @@ export function Sidebar({
           }
         }}
         title={connected ? "已连接，点击打开终端" : "点击连接"}
+        draggable
+        onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "connection", id: p.id })); }}
       >
         {connected ? <span className="status-dot on" title="已连接" /> : connecting ? <span className="status-dot connecting" title="连接中" /> : <Server size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />}
         <span className="session-meta">
@@ -201,6 +229,24 @@ export function Sidebar({
     );
   }
 
+  function renderGroup(group: ProfileGroup, depth = 0): React.ReactNode {
+    const children = sortedGroups.filter((candidate) => candidate.parent_id === group.id && visibleGroupIds.has(candidate.id));
+    const items = byGroup(group.id);
+    const isCollapsed = collapsed[group.id];
+    return <div key={group.id} className="profile-group resource-tree-group" style={{ "--tree-depth": depth } as React.CSSProperties} draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "connection-group", id: group.id })); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "connection-group") onMoveGroup(item.id, group.id); if (item.kind === "connection") onMoveProfile(item.id, group.id); } catch { /* ignore invalid external drag */ } }}>
+      <div className="profile-group-head" role="treeitem" aria-level={depth + 1} aria-expanded={!isCollapsed} tabIndex={0} onClick={() => toggleGroup(group.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleGroup(group.id); } }}>
+        {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+        <FolderTree size={13} />
+        <span className="profile-group-name">{group.name}</span>
+        <span className="profile-group-count">{items.length + children.length}</span>
+        <button className="session-x group-action" title="新建子分组" onClick={(event) => { event.stopPropagation(); handleCreateGroup(group.id); }}><FolderPlus size={12} /></button>
+        <button className="session-x group-action" title="重命名分组" onClick={(event) => handleRenameGroup(group, event)}><Pencil size={12} /></button>
+        <button className="session-x group-action" title="递归删除分组" onClick={(event) => handleDeleteGroup(group, event)}><Trash2 size={12} /></button>
+      </div>
+      {!isCollapsed && <div className="profile-group-items" role="group">{children.map((child) => renderGroup(child, depth + 1))}{items.map((item) => renderProfile(item, depth + 1))}</div>}
+    </div>;
+  }
+
   return (
     <>
     <aside className="sidebar">
@@ -232,7 +278,7 @@ export function Sidebar({
           <button
             className="sidebar-icon-btn"
             title="新建分组"
-            onClick={handleCreateGroup}
+            onClick={() => handleCreateGroup()}
           >
             <FolderPlus size={14} />
           </button>
@@ -266,57 +312,10 @@ export function Sidebar({
         ) : (
           <>
             {filter === "recent" && <div className="profile-group-head static"><span className="profile-group-name">最近连接</span><span className="profile-group-count">{orderedVisibleProfiles.length}</span></div>}
-            {sortedGroups.map((g) => {
-              const items = byGroup(g.id);
-              if (items.length === 0) return null;
-              const isCollapsed = collapsed[g.id];
-              return (
-                <div key={g.id} className="profile-group">
-                  <div
-                    className="profile-group-head"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => toggleGroup(g.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        toggleGroup(g.id);
-                      }
-                    }}
-                  >
-                    {isCollapsed ? (
-                      <ChevronRight size={14} />
-                    ) : (
-                      <ChevronDown size={14} />
-                    )}
-                    <span className="profile-group-name">{g.name}</span>
-                    <span className="profile-group-count">{items.length}</span>
-                    <button
-                      className="session-x group-action"
-                      title="重命名分组"
-                      onClick={(e) => handleRenameGroup(g, e)}
-                    >
-                      <Pencil size={12} />
-                    </button>
-                    <button
-                      className="session-x group-action"
-                      title="删除分组"
-                      onClick={(e) => handleDeleteGroup(g, e)}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                  {!isCollapsed && (
-                    <div className="profile-group-items">
-                      {items.map(renderProfile)}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            <div role="tree" aria-label="连接分组树" onKeyDown={handleTreeKeyboard} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "connection-group") onMoveGroup(item.id, null); if (item.kind === "connection") onMoveProfile(item.id, null); } catch { /* ignore invalid external drag */ } }}>{sortedGroups.filter((group) => visibleGroupIds.has(group.id) && (!group.parent_id || !groups.some((candidate) => candidate.id === group.parent_id))).map((group) => renderGroup(group))}</div>
 
             {ungrouped.length > 0 && (
-              <div className="profile-group">
+              <div className="profile-group" role="tree" aria-label="未分组连接" onKeyDown={handleTreeKeyboard}>
                 {sortedGroups.some((g) => byGroup(g.id).length > 0) && (
                   <div className="profile-group-head static">
                     <span className="profile-group-name">未分组</span>
@@ -326,7 +325,7 @@ export function Sidebar({
                   </div>
                 )}
                 <div className="profile-group-items">
-                  {[...ungrouped].sort((a, b) => Number(library.favorites.includes(b.id)) - Number(library.favorites.includes(a.id))).map(renderProfile)}
+                  {[...ungrouped].sort((a, b) => Number(library.favorites.includes(b.id)) - Number(library.favorites.includes(a.id))).map((item) => renderProfile(item))}
                 </div>
               </div>
             )}
@@ -340,12 +339,21 @@ export function Sidebar({
         </button>
       </div>
     </aside>
-    {groupDialog?.kind === "create" && <TextInputDialog title="新建连接分组" label="分组名称" confirmLabel="创建" onClose={() => setGroupDialog(null)} onConfirm={(name) => { onCreateGroup(name); setGroupDialog(null); }} />}
+    {groupDialog?.kind === "create" && <TextInputDialog title={groupDialog.parentId ? "新建子分组" : "新建连接分组"} label="分组名称" confirmLabel="创建" onClose={() => setGroupDialog(null)} onConfirm={(name) => { onCreateGroup(name, groupDialog.parentId); setGroupDialog(null); }} />}
     {groupDialog?.kind === "rename" && <TextInputDialog title="重命名连接分组" label="分组名称" initialValue={groupDialog.group.name} onClose={() => setGroupDialog(null)} onConfirm={(name) => { if (name !== groupDialog.group.name) onRenameGroup(groupDialog.group.id, name); setGroupDialog(null); }} />}
-    {groupDialog?.kind === "delete" && <ConfirmDialog title="删除连接分组" confirmLabel="删除分组" danger onClose={() => setGroupDialog(null)} onConfirm={() => { onDeleteGroup(groupDialog.group.id); setGroupDialog(null); }}><p>删除「<strong>{groupDialog.group.name}</strong>」后，组内连接会保留并移到“未分组”。</p></ConfirmDialog>}
+    {groupDialog?.kind === "delete" && <ResourceGroupDeleteDialog group={groupDialog.group} onClose={() => setGroupDialog(null)} onConfirm={() => { onDeleteGroup(groupDialog.group.id); setGroupDialog(null); }} />}
     {pendingProfileDeletion && <ConfirmDialog title="删除连接配置" confirmLabel="删除配置" danger onClose={() => setPendingProfileDeletion(null)} onConfirm={() => { const profile = pendingProfileDeletion; setPendingProfileDeletion(null); onDeleteProfile(profile.id); }}><p>将删除保存的连接配置及其本机钥匙串凭据；不会中断已建立的会话。</p><p><code>{pendingProfileDeletion.user}@{pendingProfileDeletion.host}:{pendingProfileDeletion.port}</code></p></ConfirmDialog>}
     </>
   );
+}
+
+function loadCollapsedGroups(kind: "connection" | "project"): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(`simpl-ssh:tree:${kind}:collapsed`) ?? "{}") as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, boolean> : {};
+  } catch {
+    return {};
+  }
 }
 
 type ProfileLibrary = { favorites: string[]; recent: string[] };

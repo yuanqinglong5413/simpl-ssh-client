@@ -18,12 +18,12 @@ export type LspPluginManifest = {
   languages: LspPluginLanguage[]; rootMarkers: string[]; capabilities: string[];
   runtimes: Record<string, { archiveUrl: string; sha256: string; signature: string; executable: string; args: string[] }>;
 };
-export type InstalledLspPlugin = { pluginId: string; version: string; enabled: boolean; priority: number; source?: "bundled" | "system" };
+export type InstalledLspPlugin = { pluginId: string; version: string; enabled: boolean; priority: number; source?: "managed" | "custom" | "system-detected" };
 export type LspPluginAvailability = {
   pluginId: string;
   version: string;
   status: "available" | "missing" | "unavailable";
-  source: "bundled" | "system";
+  source: "managed" | "custom" | "system-detected";
   executable?: string;
   detail: string;
 };

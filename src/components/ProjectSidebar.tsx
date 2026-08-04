@@ -3,12 +3,14 @@ import {
   Activity,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Folder,
   FolderPlus,
   FolderTree,
   GitBranch,
   Pencil,
   Plus,
+  Search,
   Server,
   Sparkles,
   Terminal,
@@ -17,19 +19,37 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useDialogFocus } from "../hooks/useDialogFocus";
-import { ConfirmDialog } from "./DialogPrimitives";
+import { ConfirmDialog, TextInputDialog } from "./DialogPrimitives";
+import { ResourceGroupDeleteDialog } from "./ResourceGroupDeleteDialog";
 import type {
   ConnectionProfile,
+  ProfileGroup,
   Project,
   ProjectInput,
   ProjectRemoteWorkspace,
   ProjectAgentBinding,
 } from "../types";
 import type { AgentPreset } from "../settings/types";
+import { handleTreeKeyboard } from "../utils/treeKeyboard";
+
+function loadProjectTreeState(): Record<string, boolean> {
+  try {
+    const value = JSON.parse(localStorage.getItem("simpl-ssh:tree:project:collapsed") ?? "{}") as unknown;
+    return value && typeof value === "object" ? value as Record<string, boolean> : {};
+  } catch {
+    return {};
+  }
+}
 
 type Props = {
   projects: Project[];
   profiles: ConnectionProfile[];
+  groups: ProfileGroup[];
+  onCreateGroup: (name: string, parentId?: string | null) => void;
+  onRenameGroup: (id: string, name: string) => void;
+  onDeleteGroup: (id: string) => void;
+  onMoveGroup: (id: string, parentId: string | null) => void;
+  onMoveProject: (id: string, groupId: string | null) => void;
   onConnectProject: (project: Project) => void;
   onOpenLocalTerminal: (project: Project) => void;
   onOpenRemote: (
@@ -53,6 +73,12 @@ type Props = {
 export function ProjectSidebar({
   projects,
   profiles,
+  groups,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
+  onMoveGroup,
+  onMoveProject,
   onConnectProject,
   onOpenLocalTerminal,
   onOpenRemote,
@@ -68,11 +94,56 @@ export function ProjectSidebar({
   const [showCreate, setShowCreate] = useState(false);
   const [agentMenuFor, setAgentMenuFor] = useState<string | null>(null);
   const [pendingDeletion, setPendingDeletion] = useState<Project | null>(null);
+  const [query, setQuery] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => loadProjectTreeState());
+  const [groupDialog, setGroupDialog] = useState<{ kind: "create"; parentId?: string | null } | { kind: "rename" | "delete"; group: ProfileGroup } | null>(null);
 
   const sorted = useMemo(
     () => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
     [projects]
   );
+  const sortedGroups = useMemo(() => {
+    const result: ProfileGroup[] = [];
+    const visit = (parentId?: string | null) => groups.filter((group) => (group.parent_id ?? null) === (parentId ?? null)).sort((a, b) => a.order - b.order).forEach((group) => { result.push(group); visit(group.id); });
+    visit(null);
+    groups.filter((group) => !result.some((item) => item.id === group.id)).forEach((group) => result.push(group));
+    return result;
+  }, [groups]);
+  const treeFilter = useMemo(() => {
+    const term = query.trim().toLocaleLowerCase();
+    if (!term) return { projects: new Set(sorted.map((project) => project.id)), groups: new Set(groups.map((group) => group.id)), searching: false };
+    const byId = new Map(groups.map((group) => [group.id, group]));
+    const matchingGroups = new Set(groups.filter((group) => group.name.toLocaleLowerCase().includes(term)).map((group) => group.id));
+    const projects = new Set(sorted.filter((project) => project.name.toLocaleLowerCase().includes(term) || project.local_path.toLocaleLowerCase().includes(term) || (project.group_id ? matchingGroups.has(project.group_id) : false)).map((project) => project.id));
+    const visibleGroups = new Set<string>();
+    const includeAncestors = (groupId?: string | null) => {
+      let current = groupId ? byId.get(groupId) : undefined;
+      while (current && !visibleGroups.has(current.id)) {
+        visibleGroups.add(current.id);
+        current = current.parent_id ? byId.get(current.parent_id) : undefined;
+      }
+    };
+    matchingGroups.forEach(includeAncestors);
+    sorted.filter((project) => projects.has(project.id)).forEach((project) => includeAncestors(project.group_id));
+    return { projects, groups: visibleGroups, searching: true };
+  }, [groups, query, sorted]);
+  const treeRows = useMemo(() => {
+    type Row = { kind: "group"; group: ProfileGroup; depth: number } | { kind: "project"; project: Project; depth: number };
+    const rows: Row[] = [];
+    const known = new Set(groups.map((group) => group.id));
+    const visit = (parentId: string | null, depth: number) => {
+      sortedGroups.filter((group) => (group.parent_id ?? null) === parentId && treeFilter.groups.has(group.id)).forEach((group) => {
+        rows.push({ kind: "group", group, depth });
+        if (treeFilter.searching || !collapsedGroups[group.id]) {
+          sorted.filter((project) => project.group_id === group.id && treeFilter.projects.has(project.id)).forEach((project) => rows.push({ kind: "project", project, depth: depth + 1 }));
+          visit(group.id, depth + 1);
+        }
+      });
+    };
+    visit(null, 0);
+    sorted.filter((project) => treeFilter.projects.has(project.id) && (!project.group_id || !known.has(project.group_id))).forEach((project) => rows.push({ kind: "project", project, depth: 0 }));
+    return rows;
+  }, [collapsedGroups, groups, sorted, sortedGroups, treeFilter]);
 
   return (
     <aside className="sidebar">
@@ -89,11 +160,18 @@ export function ProjectSidebar({
         <button role="tab" aria-selected className="active"><FolderTree size={13} /> 项目</button>
       </div>
 
-      <div className="session-list">
+      <div className="session-list" role="tree" aria-label="项目资源树" onKeyDown={handleTreeKeyboard} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "project-group") onMoveGroup(item.id, null); if (item.kind === "project") onMoveProject(item.id, null); } catch { /* ignore invalid external drag */ } }}>
         <div className="sidebar-label-row">
           <span className="sidebar-label">
             本地项目 ({sorted.length})
           </span>
+          <button
+            className="sidebar-icon-btn"
+            title="新建项目分组"
+            onClick={() => setGroupDialog({ kind: "create" })}
+          >
+            <FolderPlus size={14} />
+          </button>
           <button
             className="sidebar-icon-btn"
             title="新建项目"
@@ -103,7 +181,12 @@ export function ProjectSidebar({
           </button>
         </div>
 
-        {sorted.length === 0 && (
+        <label className="sidebar-search">
+          <Search size={13} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目、路径或分组…" aria-label="搜索项目" spellCheck={false} />
+        </label>
+
+        {sorted.length === 0 && groups.length === 0 && (
           <div className="sidebar-empty">
             <div className="sidebar-empty-icon">
               <FolderPlus size={28} />
@@ -113,15 +196,34 @@ export function ProjectSidebar({
           </div>
         )}
 
-        {sorted.map((p) => {
+        {query.trim() && treeRows.length === 0 && <div className="sidebar-empty">没有匹配的项目或分组。</div>}
+
+        {treeRows.map((row) => {
+          if (row.kind === "group") {
+            const { group, depth } = row;
+            const collapsed = Boolean(collapsedGroups[group.id]);
+            const childCount = groups.filter((item) => item.parent_id === group.id).length + sorted.filter((project) => project.group_id === group.id).length;
+            return <div key={group.id} className="profile-group-head project-tree-folder" role="treeitem" aria-level={depth + 1} aria-expanded={!collapsed} tabIndex={0} draggable style={{ marginLeft: depth * 12 + 4 }} onClick={() => setCollapsedGroups((current) => { const next = { ...current, [group.id]: !collapsed }; localStorage.setItem("simpl-ssh:tree:project:collapsed", JSON.stringify(next)); return next; })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.currentTarget.click(); } }} onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "project-group", id: group.id })); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "project-group") onMoveGroup(item.id, group.id); if (item.kind === "project") onMoveProject(item.id, group.id); } catch { /* ignore invalid external drag */ } }}>
+              {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+              <Folder size={13} />
+              <span className="profile-group-name">{group.name}</span>
+              <span className="profile-group-count">{childCount}</span>
+              <button className="session-x" title="新建子分组" onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "create", parentId: group.id }); }}><FolderPlus size={12} /></button>
+              <button className="session-x" title="重命名分组" onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "rename", group }); }}><Pencil size={12} /></button>
+              <button className="session-x" title="递归删除分组" onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "delete", group }); }}><Trash2 size={12} /></button>
+            </div>;
+          }
+          const p = row.project;
           const workspaces = projectWorkspaces(p);
           const bindings = (p.agent_bindings ?? []).filter((binding) => agentPresets.some((preset) => preset.id === binding.preset_id));
           const activeAgents = agentRuns.filter((run) => run.projectId === p.id && run.status === "running").length;
           return (
-            <div key={p.id} className="project-card">
+            <div key={p.id} className={`project-group-entry ${row.depth ? "in-folder" : "root-project"}`} style={{ marginLeft: row.depth * 12 }}>
+            <div className="project-card" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "project", id: p.id })); }}>
               <div
                 className="session-item project-local-row"
-                role="group"
+                role="treeitem"
+                aria-level={row.depth + 1}
                 aria-label={`项目 ${p.name}`}
                 tabIndex={0}
                 onClick={() => onConnectProject(p)}
@@ -211,6 +313,7 @@ export function ProjectSidebar({
                 </div>
               )}
             </div>
+            </div>
           );
         })}
       </div>
@@ -219,6 +322,7 @@ export function ProjectSidebar({
         <ProjectDialog
           project={editTarget}
           profiles={profiles}
+          groups={groups}
           onClose={() => {
             setShowCreate(false);
             setEditTarget(null);
@@ -241,6 +345,9 @@ export function ProjectSidebar({
         <p><strong>本地目录</strong><br /><code>{pendingDeletion.local_path}</code></p>
         {projectWorkspaces(pendingDeletion).length > 0 && <p><strong>关联远程环境</strong><br />{projectWorkspaces(pendingDeletion).map((workspace) => <code key={workspace.profile_id}>{workspace.remote_path || "登录后的默认目录"}</code>)}</p>}
       </ConfirmDialog>}
+      {groupDialog?.kind === "create" && <TextInputDialog title={groupDialog.parentId ? "新建项目子分组" : "新建项目分组"} label="分组名称" confirmLabel="创建" onClose={() => setGroupDialog(null)} onConfirm={(name) => { onCreateGroup(name, groupDialog.parentId); setGroupDialog(null); }} />}
+      {groupDialog?.kind === "rename" && <TextInputDialog title="重命名项目分组" label="分组名称" initialValue={groupDialog.group.name} onClose={() => setGroupDialog(null)} onConfirm={(name) => { onRenameGroup(groupDialog.group.id, name); setGroupDialog(null); }} />}
+      {groupDialog?.kind === "delete" && <ResourceGroupDeleteDialog group={groupDialog.group} onClose={() => setGroupDialog(null)} onConfirm={() => { onDeleteGroup(groupDialog.group.id); setGroupDialog(null); }} />}
     </aside>
   );
 }
@@ -249,12 +356,14 @@ export function ProjectSidebar({
 function ProjectDialog({
   project,
   profiles,
+  groups,
   onClose,
   onSave,
   agentPresets,
 }: {
   project: Project | null;
   profiles: ConnectionProfile[];
+  groups: ProfileGroup[];
   onClose: () => void;
   onSave: (input: ProjectInput) => Promise<void>;
   agentPresets: AgentPreset[];
@@ -262,6 +371,7 @@ function ProjectDialog({
   const dialogRef = useDialogFocus(true, onClose);
   const [name, setName] = useState(project?.name ?? "");
   const [localPath, setLocalPath] = useState(project?.local_path ?? "");
+  const [groupId, setGroupId] = useState(project?.group_id ?? "");
   const [remoteWorkspaces, setRemoteWorkspaces] = useState<ProjectRemoteWorkspace[]>(
     () => projectWorkspaces(project)
   );
@@ -287,7 +397,7 @@ function ProjectDialog({
       await onSave({
         name: name.trim(),
         local_path: localPath.trim(),
-        group_id: null,
+        group_id: groupId || null,
         linked_profiles: remoteWorkspaces.map((workspace) => workspace.profile_id),
         remote_workspaces: remoteWorkspaces,
         agent_bindings: agentBindings.filter((binding) => agentPresets.some((preset) => preset.id === binding.preset_id)),
@@ -317,6 +427,13 @@ function ProjectDialog({
               placeholder="项目名称"
               autoFocus
             />
+          </label>
+          <label className="form-label">
+            项目分组
+            <select className="form-input" value={groupId} onChange={(event) => setGroupId(event.target.value)}>
+              <option value="">未分组</option>
+              {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+            </select>
           </label>
           <div className="project-remote-field">
             <div className="form-label project-remote-label">
