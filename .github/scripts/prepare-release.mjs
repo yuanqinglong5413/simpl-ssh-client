@@ -1,6 +1,7 @@
 /**
  * Release 构建前预处理：
- * - 正式发布必须具备更新签名；v0.14+ 还必须编译可信 LSP 目录公钥。
+ * - v0.12/v0.13 缺少更新签名时仍生成安装包，但关闭 updater 产物。
+ * - v0.14+ 必须具备更新签名和可信 LSP 目录公钥。
  */
 import fs from 'node:fs';
 
@@ -24,15 +25,27 @@ if (!githubEnv) {
   process.exit(1);
 }
 
-if (!updaterOk) {
-  console.error('正式发布缺少有效的 TAURI_SIGNING_PRIVATE_KEY；已拒绝生成不可验证的更新产物。');
-  process.exit(1);
-}
-fs.appendFileSync(githubEnv, 'INCLUDE_UPDATER_JSON=true\n');
-
 const tag = process.env.GITHUB_REF_NAME ?? '';
 const match = tag.match(/^v?(\d+)\.(\d+)/);
-const requiresManagedLsp = match && (Number(match[1]) > 0 || Number(match[2]) >= 14);
+const requiresSignedRelease = match && (Number(match[1]) > 0 || Number(match[2]) >= 14);
+
+if (!updaterOk) {
+  if (requiresSignedRelease) {
+    console.error('v0.14+ 正式发布必须配置有效的 TAURI_SIGNING_PRIVATE_KEY。');
+    process.exit(1);
+  }
+
+  console.warn('Updater 签名密钥未配置或格式无效；本次仅生成安装包，不生成 updater 产物。');
+  const confPath = 'src-tauri/tauri.conf.json';
+  const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+  conf.bundle.createUpdaterArtifacts = false;
+  fs.writeFileSync(confPath, `${JSON.stringify(conf, null, 2)}\n`);
+  fs.appendFileSync(githubEnv, 'INCLUDE_UPDATER_JSON=false\n');
+} else {
+  fs.appendFileSync(githubEnv, 'INCLUDE_UPDATER_JSON=true\n');
+}
+
+const requiresManagedLsp = requiresSignedRelease;
 if (requiresManagedLsp) {
   const encoded = process.env.SIMPL_SSH_LSP_CATALOG_PUBLIC_KEY ?? '';
   let valid = false;
