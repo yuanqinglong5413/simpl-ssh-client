@@ -23,6 +23,7 @@ import { TransferConfirmDialog, type OverwriteChoice } from "./TransferConfirmDi
 import { LoadingState } from "./LoadingState";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { useActivity } from "../activity/ActivityProvider";
+import { logicalDropPoint, resolveSftpDropTarget } from "../utils/sftpDropTarget";
 
 type Props = {
   sessionId: string;
@@ -62,11 +63,14 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
     direction: "upload" | "download";
     names: string[];
     paths?: string[];
+    destinationDir?: string;
   } | null>(null);
   const [operation, setOperation] = useState<SftpOperation | null>(null);
   const remoteRequestRef = useRef(0);
   const localRequestRef = useRef(0);
   const sessionRef = useRef(sessionId);
+  const remotePanelRef = useRef<HTMLDivElement>(null);
+  const [dropTargetDir, setDropTargetDir] = useState<string | null>(null);
   sessionRef.current = sessionId;
   const { add: addActivity } = useActivity();
   const [filterText, setFilterText] = useState("");
@@ -78,6 +82,17 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
       return [];
     }
   });
+  const [recentPaths, setRecentPaths] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("sftp-recent-paths") || "[]"); } catch { return []; }
+  });
+  function rememberRecentPath(path: string) {
+    if (!path) return;
+    setRecentPaths((current) => {
+      const next = [path, ...current.filter((item) => item !== path)].slice(0, 12);
+      localStorage.setItem("sftp-recent-paths", JSON.stringify(next));
+      return next;
+    });
+  }
   function persistBookmarks(b: string[]) {
     setBookmarks(b);
     localStorage.setItem("sftp-bookmarks", JSON.stringify(b));
@@ -104,6 +119,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
       setPathInput(resolved);
       setEntries(list);
       setSelected([]);
+      rememberRecentPath(resolved);
     } catch (e) {
       if (requestId === remoteRequestRef.current && sessionRef.current === requestedSession) { const message = String(e); setRemoteError(message); addActivity({ id: `sftp:remote:${requestedSession}:${message}`, kind: "sftp", severity: "error", title: "远程文件加载失败", detail: message, referenceId: requestedSession }); }
     } finally {
@@ -147,7 +163,12 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, sessionId, initialPath]);
 
-  // 拖拽上传是 webview 级事件；隐藏标签不能注册，否则一次 drop 会重复入队。
+  function remoteDropTarget(position: { x: number; y: number }): string | null {
+    const point = logicalDropPoint(position, window.devicePixelRatio);
+    return resolveSftpDropTarget(document.elementFromPoint(point.x, point.y) as HTMLElement | null, remotePanelRef.current, cwd);
+  }
+
+  // 拖拽上传是 webview 级事件；仅当前可见的远程文件面板接收投放。
   useEffect(() => {
     if (!active) return;
     let un: (() => void) | undefined;
@@ -155,11 +176,20 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
     const webview = getCurrentWebview();
     webview
       .onDragDropEvent((e) => {
+        if (e.payload.type === "enter" || e.payload.type === "over") {
+          setDropTargetDir(remoteDropTarget(e.payload.position));
+          return;
+        }
+        if (e.payload.type === "leave") { setDropTargetDir(null); return; }
         if (e.payload.type === "drop") {
+          const destinationDir = remoteDropTarget(e.payload.position);
+          setDropTargetDir(null);
+          if (!destinationDir) return;
           const paths = e.payload.paths;
           setPendingTransfer({
             direction: "upload",
             paths,
+            destinationDir,
             names: paths.map((path) => path.split(/[\\/]/).filter(Boolean).pop() ?? "file"),
           });
         }
@@ -171,6 +201,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
 
   const sep = localCwd.includes("\\") ? "\\" : "/";
   const join = (name: string) => (cwd === "/" ? `/${name}` : `${cwd}/${name}`);
+  const remoteJoin = (directory: string, name: string) => directory === "/" ? `/${name}` : `${directory.replace(/\/$/, "")}/${name}`;
   const parent = () => "/" + cwd.split("/").filter(Boolean).slice(0, -1).join("/");
   const localJoin = (name: string) =>
     localCwd.endsWith(sep) ? `${localCwd}${name}` : `${localCwd}${sep}${name}`;
@@ -230,16 +261,17 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
     }
   }
 
-  async function enqueueDropped(paths: string[], overwrite: OverwriteChoice) {
+  async function enqueueDropped(paths: string[], overwrite: OverwriteChoice, destinationDir: string) {
     setError("");
     try {
       for (const path of paths) {
         const name = path.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+        const isDirectory = await invoke<boolean>("local_path_is_dir", { path });
         await invoke("transfer_enqueue", {
           sessionId,
-          kind: "upload",
+          kind: isDirectory ? "uploadDir" : "upload",
           localPath: path,
-          remotePath: join(name),
+          remotePath: remoteJoin(destinationDir, name),
           overwrite,
         });
       }
@@ -337,7 +369,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
   return (
     <div className="sftp">
       <div className="sftp-toolbar">
-        <button className="icon-btn" title="远程上一级" onClick={() => load(parent())} disabled={!cwd}>
+        <button className="icon-btn" title="远程上一级" aria-label="远程上一级" onClick={() => load(parent())} disabled={!cwd}>
           <ArrowUp size={15} />
         </button>
         <input
@@ -360,7 +392,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
           <option value="size">按大小</option>
           <option value="modified">按时间</option>
         </select>
-        <button className="icon-btn" title="刷新远程" onClick={() => load()}>
+        <button className="icon-btn" title="刷新远程" aria-label="刷新远程目录" onClick={() => load()}>
           <RefreshCw size={15} />
         </button>
         <div className="sftp-sep" />
@@ -382,12 +414,13 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
         <button
           className="icon-btn"
           title="归档（压缩/解压 tar.gz）"
+          aria-label="归档或解压选中项"
           onClick={archive}
           disabled={busy || selected.length !== 1}
         >
           <Archive size={14} />
         </button>
-        <button className="icon-btn" title="目录同步" onClick={() => setShowSync(true)}>
+        <button className="icon-btn" title="目录同步" aria-label="打开目录同步" onClick={() => setShowSync(true)}>
           <FolderSync size={15} />
         </button>
       </div>
@@ -400,6 +433,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
             <button
               className="icon-btn"
               title="本地上一级"
+              aria-label="本地上一级"
               onClick={() => loadLocal(localParent())}
             >
               <ArrowUp size={14} />
@@ -407,7 +441,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
             <span className="sftp-col-path" title={localCwd}>
               本地 · {localCwd}
             </span>
-            <button className="icon-btn" title="刷新本地" onClick={() => loadLocal()}>
+            <button className="icon-btn" title="刷新本地" aria-label="刷新本地目录" onClick={() => loadLocal()}>
               <RefreshCw size={13} />
             </button>
           </div>
@@ -416,6 +450,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
               entries={vis(localEntries)}
               selected={localSelected}
               onSelect={(name, additive) => toggleSelection(setLocalSelected, name, additive)}
+              onSelectMany={setLocalSelected}
               onEnter={localEnter}
               emptyHint="空目录"
               loading={localLoading}
@@ -429,6 +464,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
           <button
             className="icon-btn"
             title="上传 →"
+            aria-label="上传选中的本地文件"
             onClick={() => crossUpload()}
             disabled={localSelected.length === 0}
           >
@@ -437,6 +473,7 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
           <button
             className="icon-btn"
             title="← 下载"
+            aria-label="下载选中的远程文件"
             onClick={() => crossDownload()}
             disabled={selected.length === 0}
           >
@@ -444,14 +481,13 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
           </button>
         </div>
 
-        <div className="sftp-col">
+        <div ref={remotePanelRef} className={`sftp-col sftp-remote-drop-zone ${dropTargetDir === cwd || dropTargetDir === "/" && cwd === "/" ? "drop-current" : ""}`}>
           <div className="sftp-col-head">
-            <span className="sftp-col-path" title={cwd}>
-              远程 · {cwd}
-            </span>
+            <SftpBreadcrumb path={cwd || "/"} onNavigate={(path) => void load(path)} />
             <button
               className="icon-btn"
               title="收藏当前远程目录"
+              aria-label="收藏当前远程目录"
               onClick={addBookmark}
               disabled={!cwd}
             >
@@ -470,17 +506,24 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
                 </option>
               ))}
             </select>
+            <select className="sftp-bookmark-select" value="" onChange={(event) => event.target.value && void load(event.target.value)} title="最近访问目录">
+              <option value="">最近 ({recentPaths.length})</option>
+              {recentPaths.map((path) => <option key={path} value={path}>{path}</option>)}
+            </select>
           </div>
           <div className="sftp-list">
             <FileList
               entries={vis(entries)}
               selected={selected}
               onSelect={(name, additive) => toggleSelection(setSelected, name, additive)}
+              onSelectMany={setSelected}
               onEnter={enter}
               emptyHint="空目录"
               loading={remoteLoading}
               error={remoteError}
               onRetry={() => void load()}
+              remoteBase={cwd || "/"}
+              dropTargetDir={dropTargetDir}
             />
           </div>
         </div>
@@ -499,13 +542,13 @@ export function SftpPane({ sessionId, initialPath, onFileOpen, active = true, en
           direction={pendingTransfer.direction}
           count={pendingTransfer.names.length}
           source={pendingTransfer.paths ? pendingTransfer.paths.join("\n") : pendingTransfer.direction === "upload" ? pendingTransfer.names.map(localJoin).join("\n") : pendingTransfer.names.map(join).join("\n")}
-          destination={pendingTransfer.direction === "upload" ? pendingTransfer.names.map((name) => join(name)).join("\n") : pendingTransfer.names.map(localJoin).join("\n")}
+          destination={pendingTransfer.direction === "upload" ? pendingTransfer.names.map((name) => remoteJoin(pendingTransfer.destinationDir || cwd || "/", name)).join("\n") : pendingTransfer.names.map(localJoin).join("\n")}
           production={environment === "production"}
           onClose={() => setPendingTransfer(null)}
           onConfirm={async (overwrite) => {
             const pending = pendingTransfer;
             setPendingTransfer(null);
-            if (pending.paths) await enqueueDropped(pending.paths, overwrite);
+            if (pending.paths) await enqueueDropped(pending.paths, overwrite, pending.destinationDir || cwd || "/");
             else if (pending.direction === "upload") await enqueueUpload(pending.names, overwrite);
             else await enqueueDownload(pending.names, overwrite);
           }}
@@ -521,37 +564,64 @@ function FileList({
   entries,
   selected,
   onSelect,
+  onSelectMany,
   onEnter,
   emptyHint,
   loading,
   error,
   onRetry,
+  remoteBase,
+  dropTargetDir,
 }: {
   entries: FileEntry[];
   selected: string[];
   onSelect: (name: string, additive: boolean) => void;
+  onSelectMany: (names: string[]) => void;
   onEnter: (e: FileEntry) => void;
   emptyHint: string;
   loading: boolean;
   error?: string;
   onRetry?: () => void;
+  remoteBase?: string;
+  dropTargetDir?: string | null;
 }) {
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const anchorRef = useRef<string | null>(null);
   if (loading) return <LoadingState compact label="正在加载目录…" />;
   if (error) return <div className="sftp-empty sftp-list-error"><span>{error}</span>{onRetry && <button type="button" onClick={onRetry}>重试</button>}</div>;
   if (entries.length === 0) return <div className="sftp-empty">{emptyHint}</div>;
+  const selectRange = (name: string) => {
+    const anchor = anchorRef.current ?? name;
+    const a = entries.findIndex((entry) => entry.name === anchor);
+    const b = entries.findIndex((entry) => entry.name === name);
+    if (a < 0 || b < 0) return onSelectMany([name]);
+    onSelectMany(entries.slice(Math.min(a, b), Math.max(a, b) + 1).map((entry) => entry.name));
+  };
   return (
-    <>
-      {entries.map((e) => (
+    <div role="listbox" aria-multiselectable="true" className="sftp-listbox">
+      {entries.map((e, index) => {
+        const remoteDir = remoteBase && e.is_dir ? (remoteBase === "/" ? `/${e.name}` : `${remoteBase.replace(/\/$/, "")}/${e.name}`) : undefined;
+        return (
         <div
           key={e.name}
-          className={`sftp-row ${selected.includes(e.name) ? "sel" : ""}`}
-          role="button"
+          ref={(node) => { if (node) rowRefs.current.set(e.name, node); else rowRefs.current.delete(e.name); }}
+          data-sftp-drop-dir={remoteDir}
+          className={`sftp-row ${selected.includes(e.name) ? "sel" : ""} ${remoteDir && dropTargetDir === remoteDir ? "drop-target" : ""}`}
+          role="option"
+          aria-selected={selected.includes(e.name)}
           tabIndex={0}
-          onClick={(event) => onSelect(e.name, event.metaKey || event.ctrlKey)}
+          onClick={(event) => { if (event.shiftKey) selectRange(e.name); else { anchorRef.current = e.name; onSelect(e.name, event.metaKey || event.ctrlKey); } }}
           onDoubleClick={() => onEnter(e)}
           onKeyDown={(event) => {
-            if (event.key === "Enter") onEnter(e);
-            if (event.key === " ") { event.preventDefault(); onSelect(e.name, event.metaKey || event.ctrlKey); }
+            if (event.key === "Enter") { event.preventDefault(); onEnter(e); }
+            if (event.key === " ") { event.preventDefault(); anchorRef.current = e.name; onSelect(e.name, true); }
+            if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+              event.preventDefault();
+              const targetIndex = event.key === "Home" ? 0 : event.key === "End" ? entries.length - 1 : Math.max(0, Math.min(entries.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+              const target = entries[targetIndex];
+              rowRefs.current.get(target.name)?.focus();
+              if (event.shiftKey) selectRange(target.name); else { anchorRef.current = target.name; onSelect(target.name, false); }
+            }
           }}
         >
           <span className="sftp-icon">
@@ -561,9 +631,14 @@ function FileList({
           <span className="sftp-size">{e.is_dir ? "" : fmtSize(e.size)}</span>
           <span className="sftp-time">{e.modified ?? ""}</span>
         </div>
-      ))}
-    </>
+      );})}
+    </div>
   );
+}
+
+function SftpBreadcrumb({ path, onNavigate }: { path: string; onNavigate: (path: string) => void }) {
+  const parts = path.split("/").filter(Boolean);
+  return <nav className="sftp-breadcrumb" aria-label="远程目录路径"><button type="button" onClick={() => onNavigate("/")} aria-label="远程根目录">/</button>{parts.map((part, index) => { const target = `/${parts.slice(0, index + 1).join("/")}`; return <span key={target}><i>/</i><button type="button" title={target} onClick={() => onNavigate(target)}>{part}</button></span>; })}</nav>;
 }
 
 type SftpOperationKind = "mkdir" | "rename" | "delete" | "chmod" | "copy";

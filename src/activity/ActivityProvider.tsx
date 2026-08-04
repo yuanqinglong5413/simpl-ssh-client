@@ -4,6 +4,7 @@ import type { ProjectBatchJob, ProjectTaskRun, TransferTask } from "../types";
 
 export type ActivitySeverity = "info" | "warning" | "error";
 export type ActivityKind = "transfer" | "task" | "connection" | "workspace" | "file" | "sftp";
+export type ActivityAction = { kind: "open_transfers" | "open_connections" | "open_activity"; label: string };
 
 export type ActivityItem = {
   id: string;
@@ -14,6 +15,7 @@ export type ActivityItem = {
   createdAt: string;
   referenceId?: string;
   projectId?: string;
+  actions?: ActivityAction[];
 };
 
 type ActivityContextValue = {
@@ -47,17 +49,17 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     void listen<TransferTask>("transfer://state", (event) => {
       if (!alive || (event.payload.status !== "failed" && event.payload.status !== "cancelled")) return;
       const task = event.payload;
-      add({ id: `transfer:${task.id}:${task.status}:${task.retry_count}`, kind: "transfer", severity: task.status === "failed" ? "error" : "warning", title: task.status === "failed" ? "文件传输失败" : "文件传输已取消", detail: task.error || `${task.local_path} → ${task.remote_path}`, referenceId: task.id });
+      add({ id: `transfer:${task.id}:${task.status}:${task.retry_count}`, kind: "transfer", severity: task.status === "failed" ? "error" : "warning", title: task.status === "failed" ? "文件传输失败" : "文件传输已取消", detail: task.error || `${task.local_path} → ${task.remote_path}`, referenceId: task.id, actions: [{ kind: "open_transfers", label: "查看传输" }] });
     }).then((cleanup) => { if (alive) cleanups.push(cleanup); else cleanup(); }).catch(() => {});
     void listen<ProjectTaskRun>("project-task://state", (event) => {
       if (!alive || (event.payload.status !== "failed" && event.payload.status !== "cancelled")) return;
       const task = event.payload;
-      add({ id: `task:${task.id}:${task.status}`, kind: "task", severity: task.status === "failed" ? "error" : "warning", title: task.status === "failed" ? `任务失败：${task.label}` : `任务已取消：${task.label}`, detail: task.output || `退出码：${task.exit_code ?? "未知"}`, referenceId: task.id });
+      add({ id: `task:${task.id}:${task.status}`, kind: "task", severity: task.status === "failed" ? "error" : "warning", title: task.status === "failed" ? `任务失败：${task.label}` : `任务已取消：${task.label}`, detail: task.output || `退出码：${task.exit_code ?? "未知"}`, referenceId: task.id, actions: [{ kind: "open_activity", label: "查看任务" }] });
     }).then((cleanup) => { if (alive) cleanups.push(cleanup); else cleanup(); }).catch(() => {});
     void listen<ProjectBatchJob>("project-batch://state", (event) => {
       if (!alive || !["partial", "failed", "cancelled"].includes(event.payload.status)) return;
       const job = event.payload;
-      add({ id: `batch:${job.id}:${job.status}`, kind: "file", severity: job.status === "cancelled" ? "warning" : "error", title: job.status === "partial" ? "项目文件操作部分失败" : job.status === "cancelled" ? "项目文件操作已取消" : "项目文件操作失败", detail: `${job.completed} 完成、${job.failed} 失败、${job.skipped} 未执行`, referenceId: job.id });
+      add({ id: `batch:${job.id}:${job.status}`, kind: "file", severity: job.status === "cancelled" ? "warning" : "error", title: job.status === "partial" ? "项目文件操作部分失败" : job.status === "cancelled" ? "项目文件操作已取消" : "项目文件操作失败", detail: `${job.completed} 完成、${job.failed} 失败、${job.skipped} 未执行`, referenceId: job.id, actions: [{ kind: "open_activity", label: "查看项目操作" }] });
     }).then((cleanup) => { if (alive) cleanups.push(cleanup); else cleanup(); }).catch(() => {});
     return () => { alive = false; cleanups.forEach((cleanup) => cleanup()); };
   }, [add]);

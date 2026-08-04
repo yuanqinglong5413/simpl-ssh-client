@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Activity,
   ChevronDown,
@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Folder,
   FolderPlus,
+  FolderInput,
   FolderTree,
   GitBranch,
   Pencil,
@@ -31,6 +32,9 @@ import type {
 } from "../types";
 import type { AgentPreset } from "../settings/types";
 import { handleTreeKeyboard } from "../utils/treeKeyboard";
+import { MoveResourceDialog } from "./MoveResourceDialog";
+import { ResourceTreeDnd, ResourceTreeDragRow, ResourceTreeRootDrop, type ResourceDragData } from "./ResourceTreeDnd";
+import { PopoverMenu } from "./PopoverMenu";
 
 function loadProjectTreeState(): Record<string, boolean> {
   try {
@@ -48,8 +52,8 @@ type Props = {
   onCreateGroup: (name: string, parentId?: string | null) => void;
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
-  onMoveGroup: (id: string, parentId: string | null) => void;
-  onMoveProject: (id: string, groupId: string | null) => void;
+  onMoveGroup: (id: string, parentId: string | null, position?: number) => Promise<void> | void;
+  onMoveProject: (id: string, groupId: string | null, position?: number) => Promise<void> | void;
   onConnectProject: (project: Project) => void;
   onOpenLocalTerminal: (project: Project) => void;
   onOpenRemote: (
@@ -93,13 +97,16 @@ export function ProjectSidebar({
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [agentMenuFor, setAgentMenuFor] = useState<string | null>(null);
+  const agentTriggerRef = useRef<HTMLButtonElement>(null);
   const [pendingDeletion, setPendingDeletion] = useState<Project | null>(null);
+  const [moveTarget, setMoveTarget] = useState<ResourceDragData | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => loadProjectTreeState());
   const [groupDialog, setGroupDialog] = useState<{ kind: "create"; parentId?: string | null } | { kind: "rename" | "delete"; group: ProfileGroup } | null>(null);
 
   const sorted = useMemo(
-    () => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
+    () => [...projects].sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.name.localeCompare(b.name)),
     [projects]
   );
   const sortedGroups = useMemo(() => {
@@ -160,7 +167,8 @@ export function ProjectSidebar({
         <button role="tab" aria-selected className="active"><FolderTree size={13} /> 项目</button>
       </div>
 
-      <div className="session-list" role="tree" aria-label="项目资源树" onKeyDown={handleTreeKeyboard} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "project-group") onMoveGroup(item.id, null); if (item.kind === "project") onMoveProject(item.id, null); } catch { /* ignore invalid external drag */ } }}>
+      <ResourceTreeDnd kind="project" disabled={Boolean(query.trim())} onAutoExpand={(id) => { if (collapsedGroups[id]) setCollapsedGroups((current) => ({ ...current, [id]: false })); }} onError={setMoveError} onMove={async (source, parentId, position) => { if (source.nodeType === "group") await onMoveGroup(source.id, parentId, position); else await onMoveProject(source.id, parentId, position); }}>
+      <ResourceTreeRootDrop kind="project"><div className="session-list" role="tree" aria-label="项目资源树" onKeyDown={handleTreeKeyboard}>
         <div className="sidebar-label-row">
           <span className="sidebar-label">
             本地项目 ({sorted.length})
@@ -185,6 +193,7 @@ export function ProjectSidebar({
           <Search size={13} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目、路径或分组…" aria-label="搜索项目" spellCheck={false} />
         </label>
+        {query.trim() && <div className="resource-drag-disabled" role="status">搜索期间暂停拖拽；清除搜索后可整理项目和分组。</div>}
 
         {sorted.length === 0 && groups.length === 0 && (
           <div className="sidebar-empty">
@@ -203,23 +212,26 @@ export function ProjectSidebar({
             const { group, depth } = row;
             const collapsed = Boolean(collapsedGroups[group.id]);
             const childCount = groups.filter((item) => item.parent_id === group.id).length + sorted.filter((project) => project.group_id === group.id).length;
-            return <div key={group.id} className="profile-group-head project-tree-folder" role="treeitem" aria-level={depth + 1} aria-expanded={!collapsed} tabIndex={0} draggable style={{ marginLeft: depth * 12 + 4 }} onClick={() => setCollapsedGroups((current) => { const next = { ...current, [group.id]: !collapsed }; localStorage.setItem("simpl-ssh:tree:project:collapsed", JSON.stringify(next)); return next; })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.currentTarget.click(); } }} onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "project-group", id: group.id })); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "project-group") onMoveGroup(item.id, group.id); if (item.kind === "project") onMoveProject(item.id, group.id); } catch { /* ignore invalid external drag */ } }}>
+            const dragData: ResourceDragData = { treeKind: "project", nodeType: "group", id: group.id, parentId: group.parent_id ?? null, position: group.order, label: group.name };
+            return <ResourceTreeDragRow key={group.id} data={dragData} allowInside><div className="profile-group-head project-tree-folder" role="treeitem" aria-level={depth + 1} aria-expanded={!collapsed} tabIndex={0} style={{ marginLeft: depth * 12 + 4 }} onClick={() => setCollapsedGroups((current) => { const next = { ...current, [group.id]: !collapsed }; localStorage.setItem("simpl-ssh:tree:project:collapsed", JSON.stringify(next)); return next; })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.currentTarget.click(); } }}>
               {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
               <Folder size={13} />
               <span className="profile-group-name">{group.name}</span>
               <span className="profile-group-count">{childCount}</span>
-              <button className="session-x" title="新建子分组" onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "create", parentId: group.id }); }}><FolderPlus size={12} /></button>
-              <button className="session-x" title="重命名分组" onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "rename", group }); }}><Pencil size={12} /></button>
-              <button className="session-x" title="递归删除分组" onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "delete", group }); }}><Trash2 size={12} /></button>
-            </div>;
+              <button className="session-x" title="新建子分组" aria-label={`在 ${group.name} 中新建子分组`} onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "create", parentId: group.id }); }}><FolderPlus size={12} /></button>
+              <button className="session-x" title="移动分组" aria-label={`移动分组 ${group.name}`} onClick={(event) => { event.stopPropagation(); setMoveTarget(dragData); }}><FolderInput size={12} /></button>
+              <button className="session-x" title="重命名分组" aria-label={`重命名分组 ${group.name}`} onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "rename", group }); }}><Pencil size={12} /></button>
+              <button className="session-x" title="递归删除分组" aria-label={`递归删除分组 ${group.name}`} onClick={(event) => { event.stopPropagation(); setGroupDialog({ kind: "delete", group }); }}><Trash2 size={12} /></button>
+            </div></ResourceTreeDragRow>;
           }
           const p = row.project;
           const workspaces = projectWorkspaces(p);
           const bindings = (p.agent_bindings ?? []).filter((binding) => agentPresets.some((preset) => preset.id === binding.preset_id));
           const activeAgents = agentRuns.filter((run) => run.projectId === p.id && run.status === "running").length;
+          const dragData: ResourceDragData = { treeKind: "project", nodeType: "item", id: p.id, parentId: p.group_id ?? null, position: p.position ?? 0, label: p.name };
           return (
-            <div key={p.id} className={`project-group-entry ${row.depth ? "in-folder" : "root-project"}`} style={{ marginLeft: row.depth * 12 }}>
-            <div className="project-card" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "project", id: p.id })); }}>
+            <ResourceTreeDragRow key={p.id} data={dragData}><div className={`project-group-entry ${row.depth ? "in-folder" : "root-project"}`} style={{ marginLeft: row.depth * 12 }}>
+            <div className="project-card">
               <div
                 className="session-item project-local-row"
                 role="treeitem"
@@ -252,8 +264,8 @@ export function ProjectSidebar({
                   <Terminal size={13} />
                 </button>
                 <div className="project-agent-menu">
-                  <button className={`session-x ${activeAgents ? "agent-active" : ""}`} title="启动 Agent" aria-label={`启动 ${p.name} 的 Agent`} onClick={(e) => { e.stopPropagation(); setAgentMenuFor((current) => current === p.id ? null : p.id); }}><Sparkles size={13} /></button>
-                  {agentMenuFor === p.id && <div className="project-agent-popover">
+                  <button ref={agentMenuFor === p.id ? agentTriggerRef : undefined} className={`session-x ${activeAgents ? "agent-active" : ""}`} title="启动 Agent" aria-haspopup="menu" aria-expanded={agentMenuFor === p.id} aria-label={`启动 ${p.name} 的 Agent`} onClick={(e) => { e.stopPropagation(); setAgentMenuFor((current) => current === p.id ? null : p.id); }}><Sparkles size={13} /></button>
+                  <PopoverMenu open={agentMenuFor === p.id} onClose={() => setAgentMenuFor(null)} triggerRef={agentTriggerRef} className="project-agent-popover" label={`${p.name} 的 Agent`}>
                     <div className="project-agent-popover-title">项目 Agent{activeAgents ? ` · ${activeAgents} 运行中` : ""}</div>
                     {bindings.length === 0 && <div className="project-agent-empty">尚未为此项目启用 Agent</div>}
                     {bindings.map((binding) => {
@@ -262,13 +274,14 @@ export function ProjectSidebar({
                       const running = agentRuns.find((run) => run.projectId === p.id && run.presetId === binding.preset_id && run.status === "running");
                       const command = binding.command_override || preset.command;
                       return <div className="project-agent-action" key={binding.preset_id}>
-                        {running ? <button onClick={(event) => { event.stopPropagation(); setAgentMenuFor(null); onActivateAgentTab(running.tabId); }}><Activity size={13} /> {preset.name} · 运行中{running.startedAt ? `（${new Date(running.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}）` : ""}</button> : <button onClick={(event) => { event.stopPropagation(); setAgentMenuFor(null); onLaunchAgent(p, binding); }}><Sparkles size={13} /> 启动 {preset.name}</button>}
-                        <button className="project-agent-copy" title="复制启动命令" aria-label={`复制 ${preset.name} 启动命令`} onClick={(event) => { event.stopPropagation(); void navigator.clipboard?.writeText(command); }}>复制命令</button>
+                        {running ? <button role="menuitem" onClick={(event) => { event.stopPropagation(); setAgentMenuFor(null); onActivateAgentTab(running.tabId); }}><Activity size={13} /> {preset.name} · 运行中{running.startedAt ? `（${new Date(running.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}）` : ""}</button> : <button role="menuitem" onClick={(event) => { event.stopPropagation(); setAgentMenuFor(null); onLaunchAgent(p, binding); }}><Sparkles size={13} /> 启动 {preset.name}</button>}
+                        <button role="menuitem" className="project-agent-copy" title="复制启动命令" aria-label={`复制 ${preset.name} 启动命令`} onClick={(event) => { event.stopPropagation(); void navigator.clipboard?.writeText(command); }}>复制命令</button>
                       </div>;
                     })}
-                    <button className="project-agent-config" onClick={(event) => { event.stopPropagation(); setAgentMenuFor(null); setEditTarget(p); }}><Pencil size={13} /> 配置 Agent</button>
-                  </div>}
+                    <button role="menuitem" className="project-agent-config" onClick={(event) => { event.stopPropagation(); setAgentMenuFor(null); setEditTarget(p); }}><Pencil size={13} /> 配置 Agent</button>
+                  </PopoverMenu>
                 </div>
+                <button className="session-x" title="移动到分组" aria-label={`移动项目 ${p.name} 到分组`} onClick={(event) => { event.stopPropagation(); setMoveTarget(dragData); }}><FolderInput size={13} /></button>
                 <button
                   className="session-x"
                   title="编辑项目"
@@ -314,9 +327,10 @@ export function ProjectSidebar({
               )}
             </div>
             </div>
+            </ResourceTreeDragRow>
           );
         })}
-      </div>
+      </div></ResourceTreeRootDrop></ResourceTreeDnd>
 
       {(showCreate || editTarget) && (
         <ProjectDialog
@@ -348,6 +362,8 @@ export function ProjectSidebar({
       {groupDialog?.kind === "create" && <TextInputDialog title={groupDialog.parentId ? "新建项目子分组" : "新建项目分组"} label="分组名称" confirmLabel="创建" onClose={() => setGroupDialog(null)} onConfirm={(name) => { onCreateGroup(name, groupDialog.parentId); setGroupDialog(null); }} />}
       {groupDialog?.kind === "rename" && <TextInputDialog title="重命名项目分组" label="分组名称" initialValue={groupDialog.group.name} onClose={() => setGroupDialog(null)} onConfirm={(name) => { onRenameGroup(groupDialog.group.id, name); setGroupDialog(null); }} />}
       {groupDialog?.kind === "delete" && <ResourceGroupDeleteDialog group={groupDialog.group} onClose={() => setGroupDialog(null)} onConfirm={() => { onDeleteGroup(groupDialog.group.id); setGroupDialog(null); }} />}
+      {moveTarget && <MoveResourceDialog title={`移动${moveTarget.nodeType === "group" ? "分组" : "项目"}：${moveTarget.label}`} groups={groups} currentGroupId={moveTarget.parentId} movingGroupId={moveTarget.nodeType === "group" ? moveTarget.id : undefined} onClose={() => setMoveTarget(null)} onMove={(groupId) => moveTarget.nodeType === "group" ? onMoveGroup(moveTarget.id, groupId) : onMoveProject(moveTarget.id, groupId)} />}
+      {moveError && <ConfirmDialog title="无法移动资源" confirmLabel="知道了" onClose={() => setMoveError(null)} onConfirm={() => setMoveError(null)}><p>{moveError}</p></ConfirmDialog>}
     </aside>
   );
 }

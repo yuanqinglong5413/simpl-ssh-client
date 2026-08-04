@@ -22,7 +22,7 @@ type Options = {
 export class TerminalLayout {
   private frame: number | null = null;
   private redrawFrame: number | null = null;
-  private settleTimer: ReturnType<typeof window.setTimeout> | null = null;
+  private settleTimer: number | null = null;
   private disposed = false;
   private readonly observer: ResizeObserver;
   private readonly onWindowResize = () => this.schedule();

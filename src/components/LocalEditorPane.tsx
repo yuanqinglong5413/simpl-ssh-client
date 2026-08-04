@@ -341,7 +341,7 @@ export function LocalEditorPane({ root, filePath, projectId, active, editorActiv
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!active || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
+      if (!active || event.repeat || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
       if (dirty && !saving) void save();
     };

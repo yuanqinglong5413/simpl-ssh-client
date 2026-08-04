@@ -42,6 +42,14 @@ export function LocalTerminalPane({ paneId, cwd, startupCommand, onExit, onStart
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [ready, setReady] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    const openSearch = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId?: string }>).detail;
+      if (!detail?.paneId || detail.paneId === paneId) setSearchOpen(true);
+    };
+    window.addEventListener("simpl-ssh:terminal-search", openSearch);
+    return () => window.removeEventListener("simpl-ssh:terminal-search", openSearch);
+  }, [paneId]);
   const [renderStatus, setRenderStatus] = useState<TerminalRendererState>({ preference: "auto", effective: "webgl", locked: false });
   const [outputBusy, setOutputBusy] = useState(false);
   const [tuiRawMode, setTuiRawMode] = useState(false);
@@ -136,8 +144,6 @@ export function LocalTerminalPane({ paneId, cwd, startupCommand, onExit, onStart
     const cleanupActions = installTerminalActions({
       term,
       host,
-      getWs: () => wsRef.current,
-      encode: (s) => encoder.encode(s),
       tag: `local-${paneId}`,
       serialize: serializeRef.current,
     });
@@ -148,18 +154,6 @@ export function LocalTerminalPane({ paneId, cwd, startupCommand, onExit, onStart
         ws.send(encoder.encode(data));
       }
     });
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
-        e.preventDefault();
-        setSearchOpen(true);
-      }
-      if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "r") {
-        e.preventDefault();
-        rendererRef.current?.redraw();
-      }
-    };
-    host.addEventListener("keydown", onKeyDown);
 
     const startTerminal = () => {
       if (disposed || startedRef.current || startInFlightRef.current || !activeRef.current) return;
@@ -230,7 +224,6 @@ export function LocalTerminalPane({ paneId, cwd, startupCommand, onExit, onStart
       layoutRef.current = null;
       onDataDisp.dispose();
       cleanupActions();
-      host.removeEventListener("keydown", onKeyDown);
       wsRef.current?.close();
       wsRef.current = null;
       renderer.dispose();

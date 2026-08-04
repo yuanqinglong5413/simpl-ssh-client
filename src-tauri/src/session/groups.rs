@@ -143,30 +143,31 @@ impl GroupStore {
         position: i32,
     ) -> Result<ProfileGroup, String> {
         let mut guard = self.groups.lock().await;
-        let index = guard
+        let mut next = guard.clone();
+        let index = next
             .iter()
             .position(|group| group.id == id)
             .ok_or("分组不存在")?;
-        let kind = guard[index].kind.clone();
+        let kind = next[index].kind.clone();
         if parent_id.as_deref() == Some(id) {
             return Err("分组不能移动到自身".into());
         }
         if let Some(parent) = parent_id.as_deref() {
-            let parent_group = guard
+            let parent_group = next
                 .iter()
                 .find(|group| group.id == parent)
                 .ok_or("目标父分组不存在")?;
             if parent_group.kind != kind {
                 return Err("不能跨资源树移动分组".into());
             }
-            let descendants = descendant_ids(&guard, id);
+            let descendants = descendant_ids(&next, id);
             if descendants.iter().any(|candidate| candidate == parent) {
                 return Err("分组不能移动到自己的子分组".into());
             }
         }
-        let old_parent = guard[index].parent_id.clone();
-        guard[index].parent_id = parent_id.clone();
-        let mut target_siblings = guard
+        let old_parent = next[index].parent_id.clone();
+        next[index].parent_id = parent_id.clone();
+        let mut target_siblings = next
             .iter()
             .enumerate()
             .filter(|(candidate, group)| {
@@ -180,10 +181,10 @@ impl GroupStore {
             .min(target_siblings.len());
         target_siblings.insert(insert_at, (index, 0));
         for (order, (candidate, _)) in target_siblings.into_iter().enumerate() {
-            guard[candidate].order = order as i32;
+            next[candidate].order = order as i32;
         }
         if old_parent != parent_id {
-            let mut old_siblings = guard
+            let mut old_siblings = next
                 .iter()
                 .enumerate()
                 .filter(|(_, group)| group.kind == kind && group.parent_id == old_parent)
@@ -191,11 +192,12 @@ impl GroupStore {
                 .collect::<Vec<_>>();
             old_siblings.sort_by_key(|(_, order)| *order);
             for (order, (candidate, _)) in old_siblings.into_iter().enumerate() {
-                guard[candidate].order = order as i32;
+                next[candidate].order = order as i32;
             }
         }
-        let result = guard[index].clone();
-        self.persist(&guard)?;
+        let result = next[index].clone();
+        self.persist(&next)?;
+        *guard = next;
         Ok(result)
     }
 
@@ -330,6 +332,11 @@ mod tests {
             .unwrap();
         assert_eq!(store.descendants(&root.id).await.unwrap().len(), 3);
         assert!(store.move_group(&root.id, Some(leaf.id), 0).await.is_err());
+        assert_eq!(
+            store.find(&root.id).await.unwrap().parent_id,
+            None,
+            "failed moves must not mutate in-memory state"
+        );
         assert!(store
             .create_in("connection", Some(root.id), "跨树".into())
             .await

@@ -33,6 +33,7 @@ export type CommandItem = {
   description?: string;
   icon: LucideIcon;
   category: "connection" | "tab" | "action";
+  shortcut?: string;
   action: () => void;
 };
 
@@ -68,7 +69,7 @@ export function CommandPalette({ open, onClose, commands }: Props) {
   }, [open]);
 
   const filtered = useMemo(
-    () => fuzzyFilter(commands, query, (c) => c.label),
+    () => fuzzyFilter(commands, query, (c) => `${c.label} ${c.description ?? ""} ${CATEGORY_LABELS[c.category] ?? c.category} ${c.shortcut ?? ""}`),
     [commands, query]
   );
 
@@ -141,6 +142,10 @@ export function CommandPalette({ open, onClose, commands }: Props) {
             }}
             onKeyDown={onKeyDown}
             spellCheck={false}
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="command-palette-list"
+            aria-activedescendant={filtered[selectedIdx] ? `command-option-${filtered[selectedIdx].id}` : undefined}
           />
           {query && (
             <button className="palette-clear" onClick={() => setQuery("")}>
@@ -149,7 +154,7 @@ export function CommandPalette({ open, onClose, commands }: Props) {
           )}
         </div>
 
-        <div className="palette-list" ref={listRef}>
+        <div className="palette-list" ref={listRef} id="command-palette-list" role="listbox" aria-label="可用命令">
           {filtered.length === 0 ? (
             <div className="palette-empty">没有匹配的命令</div>
           ) : (
@@ -164,7 +169,10 @@ export function CommandPalette({ open, onClose, commands }: Props) {
                   return (
                     <div
                       key={item.id}
+                      id={`command-option-${item.id}`}
                       data-idx={idx}
+                      role="option"
+                      aria-selected={idx === selectedIdx}
                       className={`palette-item ${idx === selectedIdx ? "selected" : ""}`}
                       onClick={() => execute(item)}
                       onMouseEnter={() => setSelectedIdx(idx)}
@@ -176,6 +184,7 @@ export function CommandPalette({ open, onClose, commands }: Props) {
                           <span className="palette-item-desc">{item.description}</span>
                         )}
                       </div>
+                      {item.shortcut && <kbd className="palette-item-shortcut">{item.shortcut}</kbd>}
                     </div>
                   );
                 })}
@@ -224,6 +233,7 @@ export function builtinCommands(handlers: {
       id: "action:new",
       label: "新建连接",
       description: "Cmd+N",
+      shortcut: "⌘/Ctrl N",
       icon: Plus,
       category: "action",
       action: handlers.onNewConnection,
@@ -269,6 +279,7 @@ export function builtinCommands(handlers: {
       id: "action:close-tab",
       label: "关闭当前标签",
       description: "Cmd+W",
+      shortcut: "⌘/Ctrl W",
       icon: X,
       category: "action",
       action: handlers.onCloseTab,
@@ -277,6 +288,7 @@ export function builtinCommands(handlers: {
       id: "action:settings",
       label: "打开设置",
       description: "Cmd+,",
+      shortcut: "⌘/Ctrl ,",
       icon: Settings,
       category: "action",
       action: handlers.onOpenSettings,

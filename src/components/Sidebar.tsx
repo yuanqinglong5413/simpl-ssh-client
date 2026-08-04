@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FolderPlus,
+  FolderInput,
   FolderTree,
   Pencil,
   Plus,
@@ -17,6 +18,8 @@ import type { ConnectionProfile, ProfileGroup } from "../types";
 import { ConfirmDialog, TextInputDialog } from "./DialogPrimitives";
 import { ResourceGroupDeleteDialog } from "./ResourceGroupDeleteDialog";
 import { handleTreeKeyboard } from "../utils/treeKeyboard";
+import { MoveResourceDialog } from "./MoveResourceDialog";
+import { ResourceTreeDnd, ResourceTreeDragRow, ResourceTreeRootDrop, type ResourceDragData } from "./ResourceTreeDnd";
 
 type Props = {
   profiles: ConnectionProfile[];
@@ -32,8 +35,8 @@ type Props = {
   onCreateGroup: (name: string, parentId?: string | null) => void;
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
-  onMoveGroup: (id: string, parentId: string | null) => void;
-  onMoveProfile: (id: string, groupId: string | null) => void;
+  onMoveGroup: (id: string, parentId: string | null, position?: number) => Promise<void> | void;
+  onMoveProfile: (id: string, groupId: string | null, position?: number) => Promise<void> | void;
   onNew: () => void;
   onImportSshConfig: () => void;
   onModeChange: (mode: "ssh" | "project") => void;
@@ -70,6 +73,8 @@ export function Sidebar({
   const [library, setLibrary] = useState<ProfileLibrary>(() => loadLibrary());
   const [filter, setFilter] = useState<"all" | "favorites" | "recent">("all");
   const [pendingProfileDeletion, setPendingProfileDeletion] = useState<ConnectionProfile | null>(null);
+  const [moveTarget, setMoveTarget] = useState<ResourceDragData | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
   const [groupDialog, setGroupDialog] = useState<
     | { kind: "create"; parentId?: string | null }
     | { kind: "rename"; group: ProfileGroup }
@@ -110,7 +115,7 @@ export function Sidebar({
 
   const orderedVisibleProfiles = [...visibleProfiles].sort((a, b) => {
     if (filter === "recent") return library.recent.indexOf(a.id) - library.recent.indexOf(b.id);
-    return Number(library.favorites.includes(b.id)) - Number(library.favorites.includes(a.id));
+    return (a.position ?? 0) - (b.position ?? 0) || a.name.localeCompare(b.name);
   });
   const ungrouped = orderedVisibleProfiles.filter((p) => !p.group_id);
   const byGroup = (gid: string) => orderedVisibleProfiles.filter((p) => p.group_id === gid);
@@ -161,7 +166,9 @@ export function Sidebar({
     const connecting = connectingIds.has(p.id);
     const favorite = library.favorites.includes(p.id);
     const failure = connectionErrors[p.id];
+    const dragData: ResourceDragData = { treeKind: "connection", nodeType: "item", id: p.id, parentId: p.group_id ?? null, position: p.position ?? 0, label: p.name };
     return (
+      <ResourceTreeDragRow key={p.id} data={dragData}>
       <div
         key={p.id}
         className={`session-item ${connected ? "active" : ""}`}
@@ -180,8 +187,6 @@ export function Sidebar({
           }
         }}
         title={connected ? "已连接，点击打开终端" : "点击连接"}
-        draggable
-        onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "connection", id: p.id })); }}
       >
         {connected ? <span className="status-dot on" title="已连接" /> : connecting ? <span className="status-dot connecting" title="连接中" /> : <Server size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />}
         <span className="session-meta">
@@ -207,7 +212,16 @@ export function Sidebar({
         </button>
         <button
           className="session-x"
+          title="移动到分组"
+          aria-label={`移动 ${p.name} 到分组`}
+          onClick={(e) => { e.stopPropagation(); setMoveTarget(dragData); }}
+        >
+          <FolderInput size={13} />
+        </button>
+        <button
+          className="session-x"
           title="编辑"
+          aria-label={`编辑 ${p.name}`}
           onClick={(e) => {
             e.stopPropagation();
             onEditProfile(p);
@@ -218,6 +232,7 @@ export function Sidebar({
         <button
           className="session-x"
           title="删除"
+          aria-label={`删除 ${p.name}`}
           onClick={(e) => {
             e.stopPropagation();
             setPendingProfileDeletion(p);
@@ -226,6 +241,7 @@ export function Sidebar({
           <Trash2 size={13} />
         </button>
       </div>
+      </ResourceTreeDragRow>
     );
   }
 
@@ -233,16 +249,20 @@ export function Sidebar({
     const children = sortedGroups.filter((candidate) => candidate.parent_id === group.id && visibleGroupIds.has(candidate.id));
     const items = byGroup(group.id);
     const isCollapsed = collapsed[group.id];
-    return <div key={group.id} className="profile-group resource-tree-group" style={{ "--tree-depth": depth } as React.CSSProperties} draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-simpl-resource", JSON.stringify({ kind: "connection-group", id: group.id })); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "connection-group") onMoveGroup(item.id, group.id); if (item.kind === "connection") onMoveProfile(item.id, group.id); } catch { /* ignore invalid external drag */ } }}>
+    const dragData: ResourceDragData = { treeKind: "connection", nodeType: "group", id: group.id, parentId: group.parent_id ?? null, position: group.order, label: group.name };
+    return <div key={group.id} className="profile-group resource-tree-group" style={{ "--tree-depth": depth } as React.CSSProperties}>
+      <ResourceTreeDragRow data={dragData} allowInside>
       <div className="profile-group-head" role="treeitem" aria-level={depth + 1} aria-expanded={!isCollapsed} tabIndex={0} onClick={() => toggleGroup(group.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleGroup(group.id); } }}>
         {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
         <FolderTree size={13} />
         <span className="profile-group-name">{group.name}</span>
         <span className="profile-group-count">{items.length + children.length}</span>
-        <button className="session-x group-action" title="新建子分组" onClick={(event) => { event.stopPropagation(); handleCreateGroup(group.id); }}><FolderPlus size={12} /></button>
-        <button className="session-x group-action" title="重命名分组" onClick={(event) => handleRenameGroup(group, event)}><Pencil size={12} /></button>
-        <button className="session-x group-action" title="递归删除分组" onClick={(event) => handleDeleteGroup(group, event)}><Trash2 size={12} /></button>
+        <button className="session-x group-action" title="新建子分组" aria-label={`在 ${group.name} 中新建子分组`} onClick={(event) => { event.stopPropagation(); handleCreateGroup(group.id); }}><FolderPlus size={12} /></button>
+        <button className="session-x group-action" title="移动分组" aria-label={`移动分组 ${group.name}`} onClick={(event) => { event.stopPropagation(); setMoveTarget(dragData); }}><FolderInput size={12} /></button>
+        <button className="session-x group-action" title="重命名分组" aria-label={`重命名分组 ${group.name}`} onClick={(event) => handleRenameGroup(group, event)}><Pencil size={12} /></button>
+        <button className="session-x group-action" title="递归删除分组" aria-label={`递归删除分组 ${group.name}`} onClick={(event) => handleDeleteGroup(group, event)}><Trash2 size={12} /></button>
       </div>
+      </ResourceTreeDragRow>
       {!isCollapsed && <div className="profile-group-items" role="group">{children.map((child) => renderGroup(child, depth + 1))}{items.map((item) => renderProfile(item, depth + 1))}</div>}
     </div>;
   }
@@ -302,6 +322,7 @@ export function Sidebar({
             </button>
           ))}
         </div>
+        {(queryText || filter !== "all") && <div className="resource-drag-disabled" role="status">筛选期间暂停拖拽；清除搜索并切回“全部”后可整理顺序。</div>}
 
         {profiles.length === 0 ? (
           <div className="sidebar-empty">
@@ -312,7 +333,8 @@ export function Sidebar({
         ) : (
           <>
             {filter === "recent" && <div className="profile-group-head static"><span className="profile-group-name">最近连接</span><span className="profile-group-count">{orderedVisibleProfiles.length}</span></div>}
-            <div role="tree" aria-label="连接分组树" onKeyDown={handleTreeKeyboard} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); try { const item = JSON.parse(event.dataTransfer.getData("application/x-simpl-resource")) as { kind: string; id: string }; if (item.kind === "connection-group") onMoveGroup(item.id, null); if (item.kind === "connection") onMoveProfile(item.id, null); } catch { /* ignore invalid external drag */ } }}>{sortedGroups.filter((group) => visibleGroupIds.has(group.id) && (!group.parent_id || !groups.some((candidate) => candidate.id === group.parent_id))).map((group) => renderGroup(group))}</div>
+            <ResourceTreeDnd kind="connection" disabled={Boolean(queryText) || filter !== "all"} onAutoExpand={(id) => { if (collapsed[id]) toggleGroup(id); }} onError={setMoveError} onMove={async (source, parentId, position) => { if (source.nodeType === "group") await onMoveGroup(source.id, parentId, position); else await onMoveProfile(source.id, parentId, position); }}>
+              <ResourceTreeRootDrop kind="connection"><div role="tree" aria-label="连接分组树" onKeyDown={handleTreeKeyboard}>{sortedGroups.filter((group) => visibleGroupIds.has(group.id) && (!group.parent_id || !groups.some((candidate) => candidate.id === group.parent_id))).map((group) => renderGroup(group))}</div></ResourceTreeRootDrop>
 
             {ungrouped.length > 0 && (
               <div className="profile-group" role="tree" aria-label="未分组连接" onKeyDown={handleTreeKeyboard}>
@@ -325,10 +347,11 @@ export function Sidebar({
                   </div>
                 )}
                 <div className="profile-group-items">
-                  {[...ungrouped].sort((a, b) => Number(library.favorites.includes(b.id)) - Number(library.favorites.includes(a.id))).map((item) => renderProfile(item))}
+                  {ungrouped.map((item) => renderProfile(item))}
                 </div>
               </div>
             )}
+            </ResourceTreeDnd>
           </>
         )}
       </div>
@@ -343,6 +366,8 @@ export function Sidebar({
     {groupDialog?.kind === "rename" && <TextInputDialog title="重命名连接分组" label="分组名称" initialValue={groupDialog.group.name} onClose={() => setGroupDialog(null)} onConfirm={(name) => { if (name !== groupDialog.group.name) onRenameGroup(groupDialog.group.id, name); setGroupDialog(null); }} />}
     {groupDialog?.kind === "delete" && <ResourceGroupDeleteDialog group={groupDialog.group} onClose={() => setGroupDialog(null)} onConfirm={() => { onDeleteGroup(groupDialog.group.id); setGroupDialog(null); }} />}
     {pendingProfileDeletion && <ConfirmDialog title="删除连接配置" confirmLabel="删除配置" danger onClose={() => setPendingProfileDeletion(null)} onConfirm={() => { const profile = pendingProfileDeletion; setPendingProfileDeletion(null); onDeleteProfile(profile.id); }}><p>将删除保存的连接配置及其本机钥匙串凭据；不会中断已建立的会话。</p><p><code>{pendingProfileDeletion.user}@{pendingProfileDeletion.host}:{pendingProfileDeletion.port}</code></p></ConfirmDialog>}
+    {moveTarget && <MoveResourceDialog title={`移动${moveTarget.nodeType === "group" ? "分组" : "连接"}：${moveTarget.label}`} groups={groups} currentGroupId={moveTarget.parentId} movingGroupId={moveTarget.nodeType === "group" ? moveTarget.id : undefined} onClose={() => setMoveTarget(null)} onMove={(groupId) => moveTarget.nodeType === "group" ? onMoveGroup(moveTarget.id, groupId) : onMoveProfile(moveTarget.id, groupId)} />}
+    {moveError && <ConfirmDialog title="无法移动资源" confirmLabel="知道了" onClose={() => setMoveError(null)} onConfirm={() => setMoveError(null)}><p>{moveError}</p></ConfirmDialog>}
     </>
   );
 }

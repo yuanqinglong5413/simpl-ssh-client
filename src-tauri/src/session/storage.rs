@@ -10,7 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub struct AppDatabase {
     connection: Mutex<Connection>,
@@ -178,7 +178,8 @@ impl AppDatabase {
         if current < 1 {
             migrate_legacy(&mut connection, root)?;
         }
-        if current < 2 {
+        if current < 3 {
+            ensure_position_columns(&connection)?;
             materialize_all_collections(&mut connection)?;
         }
         if current < SCHEMA_VERSION {
@@ -205,14 +206,14 @@ impl AppDatabase {
              CREATE TABLE migration_warnings(id INTEGER PRIMARY KEY, message TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE secret_cleanup_queue(profile_id TEXT NOT NULL, credential_kind TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(profile_id, credential_kind));
              CREATE TABLE resource_groups(id TEXT PRIMARY KEY, kind TEXT NOT NULL, parent_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, name TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL);
-             CREATE TABLE connection_profiles(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, jump_profile_id TEXT REFERENCES connection_profiles(id) ON DELETE SET NULL, payload TEXT NOT NULL);
-             CREATE TABLE projects(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, payload TEXT NOT NULL);
+             CREATE TABLE connection_profiles(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, jump_profile_id TEXT REFERENCES connection_profiles(id) ON DELETE SET NULL, position INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL);
+             CREATE TABLE projects(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE CASCADE, position INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL);
              CREATE TABLE project_remote_workspaces(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, profile_id TEXT NOT NULL REFERENCES connection_profiles(id) ON DELETE CASCADE, remote_path TEXT NOT NULL, PRIMARY KEY(project_id, profile_id));
              CREATE TABLE project_agent_bindings(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, preset_id TEXT NOT NULL, position INTEGER NOT NULL, command_override TEXT, PRIMARY KEY(project_id, preset_id));
              CREATE TABLE command_snippets(id TEXT PRIMARY KEY, group_id TEXT REFERENCES resource_groups(id) ON DELETE SET NULL, payload TEXT NOT NULL);
              CREATE TABLE workspace_snapshots(id INTEGER PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
              PRAGMA foreign_keys = ON;
-             PRAGMA user_version = 2;"
+             PRAGMA user_version = 3;"
         ).unwrap();
         Self {
             connection: Mutex::new(connection),
@@ -406,6 +407,34 @@ impl AppDatabase {
     }
 }
 
+fn ensure_position_columns(connection: &Connection) -> Result<(), String> {
+    for (table, statement) in [
+        (
+            "connection_profiles",
+            "ALTER TABLE connection_profiles ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "projects",
+            "ALTER TABLE projects ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        let mut query = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(|error| error.to_string())?;
+        let columns = query
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        if !columns.iter().any(|column| column == "position") {
+            connection
+                .execute(statement, [])
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// `app_collections` 是一个版本兼容层；规范化表才是损坏恢复的第二份来源。
 /// 主集合缺失或 JSON 无法解析时，重新组合相同的公开数据形状，避免界面静默变空。
 fn reconstruct_collection(connection: &Connection, name: &str) -> Result<Option<String>, String> {
@@ -588,6 +617,13 @@ fn text(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn number(value: &serde_json::Value, key: &str) -> i64 {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_default()
+}
+
 fn materialize_groups(
     transaction: &rusqlite::Transaction<'_>,
     payload: &str,
@@ -656,9 +692,9 @@ fn materialize_profiles(
         };
         let group_id = valid_group(transaction, text(profile, "group_id"), "connection")?;
         transaction.execute(
-            "INSERT INTO connection_profiles(id, group_id, jump_profile_id, payload) VALUES(?1, ?2, NULL, ?3)
-             ON CONFLICT(id) DO UPDATE SET group_id=excluded.group_id, jump_profile_id=NULL, payload=excluded.payload",
-            params![id, group_id, profile.to_string()],
+            "INSERT INTO connection_profiles(id, group_id, jump_profile_id, position, payload) VALUES(?1, ?2, NULL, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET group_id=excluded.group_id, jump_profile_id=NULL, position=excluded.position, payload=excluded.payload",
+            params![id, group_id, number(profile, "position"), profile.to_string()],
         ).map_err(|error| error.to_string())?;
     }
     for profile in &profiles {
@@ -693,9 +729,9 @@ fn materialize_projects(
         let group_id = valid_group(transaction, text(project, "group_id"), "project")?;
         transaction
             .execute(
-                "INSERT INTO projects(id, group_id, payload) VALUES(?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET group_id=excluded.group_id, payload=excluded.payload",
-                params![id, group_id, project.to_string()],
+                "INSERT INTO projects(id, group_id, position, payload) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET group_id=excluded.group_id, position=excluded.position, payload=excluded.payload",
+                params![id, group_id, number(project, "position"), project.to_string()],
             )
             .map_err(|error| error.to_string())?;
         transaction
@@ -816,7 +852,7 @@ fn delete_stale(
 
 #[cfg(test)]
 mod tests {
-    use super::AppDatabase;
+    use super::{ensure_position_columns, AppDatabase};
     use serde_json::json;
 
     #[test]
@@ -829,6 +865,22 @@ mod tests {
             vec!["中文", "data"]
         );
         database.delete(&key).unwrap();
+    }
+
+    #[test]
+    fn position_schema_migration_is_idempotent() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE connection_profiles(id TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE projects(id TEXT PRIMARY KEY, payload TEXT NOT NULL);").unwrap();
+        ensure_position_columns(&connection).unwrap();
+        ensure_position_columns(&connection).unwrap();
+        let connection_columns = connection
+            .prepare("PRAGMA table_info(connection_profiles)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(connection_columns.iter().any(|column| column == "position"));
     }
 
     #[test]

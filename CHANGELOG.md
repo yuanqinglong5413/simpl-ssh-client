@@ -6,6 +6,21 @@
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-08-04
+
+### 新增
+- **完整资源树整理**：连接与项目支持拖入、拖出任意层级分组，同级排序、折叠分组自动展开、根节点投放，以及键盘“移动到分组”操作。
+- **工作区交互统一**：标签支持拖动排序；弹出菜单统一方向键、Escape、外部点击和焦点恢复；分屏分隔条支持键盘调整与双击复位。
+
+### 变更
+- **终端快捷键路由**：终端焦点内仅保留命令面板快捷键，其余组合键完整透传给 shell、vim、Claude Code、OpenCode 等 PTY/TUI 程序。
+- **SFTP 安全投放**：系统文件只允许投放到远程面板；悬停目录作为目标，空白区使用当前目录，并在入队前展示完整目标和覆盖策略。
+
+### 修复
+- **终端重复粘贴**：一次粘贴快捷键只在首次按键阶段执行，阻止 WebView 默认路径重复写入，并通过 xterm 原生粘贴保留 bracketed-paste 行为。
+- **重复快捷操作**：复制、日志导出、应用快捷键和编辑器保存忽略按键自动重复，终端销毁后晚到的剪贴板结果不再写入。
+- **资源排序可靠性**：资源位置迁移可安全重试，移动在 SQLite 事务中完成，写入失败不会污染内存排序状态。
+
 ## [0.12.1] - 2026-08-04
 
 ### 修复
@@ -175,7 +190,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.11.0...v0.11.1

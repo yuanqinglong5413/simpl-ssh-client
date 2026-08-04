@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Activity, ArrowDownToLine, CircleAlert, GitPullRequestArrow, ListTodo, X, XCircle } from "lucide-react";
 import type { ConnectionEnvironment, SessionInfo } from "../types";
 import { TransferPanel } from "./TransferPanel";
@@ -8,6 +8,7 @@ import { useTasks } from "../tasks/TaskProvider";
 import { summarizeTransferTasks } from "../tasks/taskSummary";
 import { useActivity } from "../activity/ActivityProvider";
 import { useDialogFocus } from "../hooks/useDialogFocus";
+import { ConfirmDialog } from "./DialogPrimitives";
 
 export type TaskSection = "activity" | "transfers" | "forwards" | "monitor";
 
@@ -26,6 +27,7 @@ export function TaskDrawer({ open, section, session, onSectionChange, onClose, o
   const { tasks, error: taskError, batchJobs, batchError, cancelBatch, retryBatch } = useTasks();
   const { items: activities, dismiss: dismissActivity, clear: clearActivities } = useActivity();
   const drawerFocusRef = useDialogFocus(open, onClose);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const summary = useMemo(() => summarizeTransferTasks(tasks), [tasks]);
   const activeBatches = batchJobs.filter((job) => ["queued", "running", "cancelling"].includes(job.status));
@@ -62,7 +64,7 @@ export function TaskDrawer({ open, section, session, onSectionChange, onClose, o
             {batchError && <div className="task-alert task-alert-error"><CircleAlert size={15} /> {batchError}</div>}
             <div className="task-activity-card"><ListTodo size={16} /><div><strong>{activeCount} 个后台任务</strong><span>传输和项目文件操作会在后台继续，失败项会保留以便重试。</span></div></div>
             {batchJobs.length > 0 && <div className="task-batch-list"><header><strong>项目文件操作</strong><span>{activeBatches.length ? `${activeBatches.length} 进行中` : "最近 20 条"}</span></header>{batchJobs.slice().reverse().map((job) => <div key={job.id} className="task-batch-row"><div><strong>{batchOperationLabel(job.operation)}</strong><span>{job.current_path || `${job.completed + job.failed + job.skipped} / ${job.total}`}</span></div><small>{batchStatusLabel(job.status)}</small>{["queued", "running", "cancelling"].includes(job.status) ? <button className="text-btn" onClick={() => void cancelBatch(job.id)}>取消</button> : job.failed > 0 ? <button className="text-btn" onClick={() => void retryBatch(job)}>重试失败项</button> : null}</div>)}</div>}
-            {activities.length > 0 && <div className="task-activity-timeline"><header><strong>需要处理</strong><button className="text-btn" onClick={clearActivities}>清空</button></header>{activities.map((item) => <div key={item.id} className={`activity-item severity-${item.severity}`}><span className="activity-dot" /><div><strong>{item.title}</strong>{item.detail && <span>{item.detail}</span>}<small>{new Date(item.createdAt).toLocaleTimeString()}</small><div className="activity-item-actions">{item.kind === "transfer" && <button className="text-btn" onClick={() => onSectionChange("transfers")}>查看传输</button>}{item.kind === "connection" && onOpenConnections && <button className="text-btn" onClick={onOpenConnections}>打开连接列表</button>}<button className="text-btn" onClick={() => dismissActivity(item.id)}>关闭</button></div></div><button className="icon-btn" aria-label="关闭活动" title="关闭活动" onClick={() => dismissActivity(item.id)}><XCircle size={14} /></button></div>)}</div>}
+            {activities.length > 0 && <div className="task-activity-timeline"><header><strong>需要处理</strong><button className="text-btn" onClick={() => setConfirmClear(true)}>清空</button></header>{activities.map((item) => <div key={item.id} className={`activity-item severity-${item.severity}`}><span className="activity-dot" /><div><strong>{item.title}</strong>{item.detail && <span>{item.detail}</span>}<small>{new Date(item.createdAt).toLocaleTimeString()}</small><div className="activity-item-actions">{(item.actions ?? []).map((action) => <button key={action.kind} className="text-btn" onClick={() => { if (action.kind === "open_transfers") onSectionChange("transfers"); else if (action.kind === "open_connections") onOpenConnections?.(); else onSectionChange("activity"); }}>{action.label}</button>)}{!item.actions?.length && item.kind === "transfer" && <button className="text-btn" onClick={() => onSectionChange("transfers")}>查看传输</button>}{item.kind === "connection" && onOpenConnections && <button className="text-btn" onClick={onOpenConnections}>打开连接列表</button>}<button className="text-btn" onClick={() => dismissActivity(item.id)}>关闭</button></div></div><button className="icon-btn" aria-label="关闭活动" title="关闭活动" onClick={() => dismissActivity(item.id)}><XCircle size={14} /></button></div>)}</div>}
             {failedCount > 0 && <div className="task-alert"><CircleAlert size={15} /> {failedCount} 个后台任务需要处理，详情见上方时间线和项目操作列表。</div>}
             {!activeCount && !failedCount && <p>当前没有后台任务。打开文件面板即可开始传输。</p>}
           </div>
@@ -73,6 +75,7 @@ export function TaskDrawer({ open, section, session, onSectionChange, onClose, o
       </div>
       </div>
       </aside>
+      {confirmClear && <ConfirmDialog title="清空需要处理的事项" confirmLabel="清空" danger onClose={() => setConfirmClear(false)} onConfirm={() => { clearActivities(); setConfirmClear(false); }}><p>这只会清除当前运行期的提示记录，不会取消后台任务，也不会修复尚未解决的问题。</p></ConfirmDialog>}
     </>
   );
 }

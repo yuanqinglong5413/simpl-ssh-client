@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { resolveAppShortcut, shortcutScope } from "../utils/appShortcuts";
 
 type ShortcutHandlers = {
   onNewConnection: () => void;
@@ -9,64 +10,27 @@ type ShortcutHandlers = {
   onOpenCommandPalette: () => void;
 };
 
-/** 是否在可编辑元素中（此时不拦截快捷键） */
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-  return target.isContentEditable;
-}
-
-/** 终端、CodeMirror 与原生输入控件优先获得按键，应用快捷键不应抢走 PTY 输入。 */
-function belongsToInteractiveSurface(event: KeyboardEvent): boolean {
-  if (isEditableTarget(event.target)) return true;
-  return event.composedPath().some((item) =>
-    item instanceof HTMLElement && (
-      item.classList.contains("terminal-host") ||
-      item.classList.contains("xterm") ||
-      item.classList.contains("cm-editor")
-    )
-  );
-}
-
 /**
- * 全局应用快捷键（终端焦点时不拦截 Ctrl+F，留给终端搜索）。
+ * 全局应用快捷键。终端焦点内只保留 Cmd/Ctrl+Shift+P，其他组合键透传。
  */
 export function useAppShortcuts(handlers: ShortcutHandlers) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (belongsToInteractiveSurface(e)) return;
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
-
-      switch (e.key.toLowerCase()) {
-        case "n":
-          e.preventDefault();
-          handlers.onNewConnection();
-          break;
-        case "w":
-          e.preventDefault();
-          handlers.onCloseTab();
-          break;
-        case "tab":
-          e.preventDefault();
-          if (e.shiftKey) handlers.onPrevTab();
-          else handlers.onNextTab();
-          break;
-        case ",":
-          e.preventDefault();
-          handlers.onOpenSettings();
-          break;
-        case "k":
-        case "p":
-          e.preventDefault();
-          handlers.onOpenCommandPalette();
-          break;
-        default:
-          break;
-      }
+      // 长按组合键产生的 repeat 不能重复创建连接、关闭多个标签或反复开关弹窗。
+      if (e.defaultPrevented || e.repeat) return;
+      const action = resolveAppShortcut(e, shortcutScope(e));
+      if (!action) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (action === "newConnection") handlers.onNewConnection();
+      else if (action === "closeTab") handlers.onCloseTab();
+      else if (action === "nextTab") handlers.onNextTab();
+      else if (action === "prevTab") handlers.onPrevTab();
+      else if (action === "settings") handlers.onOpenSettings();
+      else handlers.onOpenCommandPalette();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    // 捕获阶段只拦截真正属于应用的组合键；否则 xterm 会先把命令面板按键写入 PTY。
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [handlers]);
 }

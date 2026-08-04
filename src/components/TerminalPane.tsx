@@ -48,6 +48,14 @@ export function TerminalPane({ sessionId, paneId, startupCommand, onConnectionLo
   connLostRef.current = onConnectionLost;
   const [ready, setReady] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    const openSearch = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId?: string }>).detail;
+      if (!detail?.paneId || detail.paneId === paneId) setSearchOpen(true);
+    };
+    window.addEventListener("simpl-ssh:terminal-search", openSearch);
+    return () => window.removeEventListener("simpl-ssh:terminal-search", openSearch);
+  }, [paneId]);
   const [renderStatus, setRenderStatus] = useState<TerminalRendererState>({ preference: "auto", effective: "webgl", locked: false });
   const [outputBusy, setOutputBusy] = useState(false);
   const [tuiRawMode, setTuiRawMode] = useState(false);
@@ -143,8 +151,6 @@ export function TerminalPane({ sessionId, paneId, startupCommand, onConnectionLo
     const cleanupActions = installTerminalActions({
       term,
       host,
-      getWs: () => wsRef.current,
-      encode: (s) => encoder.encode(s),
       tag: `session-${sessionId}`,
       serialize: serializeRef.current,
     });
@@ -170,19 +176,6 @@ export function TerminalPane({ sessionId, paneId, startupCommand, onConnectionLo
         }
       }
     });
-
-    /** Ctrl+F / Cmd+F 打开终端搜索 */
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
-        e.preventDefault();
-        setSearchOpen(true);
-      }
-      if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "r") {
-        e.preventDefault();
-        rendererRef.current?.redraw();
-      }
-    };
-    host.addEventListener("keydown", onKeyDown);
 
     // 先得到稳定的真实行列数，再创建远端 PTY，避免 TUI 在默认 80×24 / 错误
     // 字体度量上完成首屏绘制，之后只能靠窗口 resize 才恢复。
@@ -253,7 +246,6 @@ export function TerminalPane({ sessionId, paneId, startupCommand, onConnectionLo
       layoutRef.current = null;
       onDataDisp.dispose();
       cleanupActions();
-      host.removeEventListener("keydown", onKeyDown);
       wsRef.current?.close();
       wsRef.current = null;
       renderer.dispose();

@@ -33,6 +33,8 @@ pub struct Project {
     /// 本地工作目录绝对路径
     pub local_path: String,
     pub group_id: Option<String>,
+    #[serde(default)]
+    pub position: i32,
     pub created_at: String,
     /// 关联的 SSH 连接配置 ID 列表
     #[serde(default)]
@@ -73,7 +75,9 @@ impl Default for ProjectStore {
 impl ProjectStore {
     /// 从 SQLite 加载（没有项目则为空）。
     pub fn new(database: Arc<AppDatabase>) -> Self {
-        let projects = database.load("projects").ok().flatten().unwrap_or_default();
+        let mut projects: Vec<Project> =
+            database.load("projects").ok().flatten().unwrap_or_default();
+        normalize_positions(&mut projects);
         Self {
             projects: Mutex::new(projects),
             database,
@@ -95,22 +99,26 @@ impl ProjectStore {
     }
 
     pub async fn create(&self, input: ProjectInput) -> Result<Project, String> {
+        let mut guard = self.projects.lock().await;
         let (linked_profiles, remote_workspaces) =
             normalize_workspaces(input.linked_profiles, input.remote_workspaces);
+        let position = next_position(&guard, input.group_id.as_deref());
         let project = Project {
             id: uuid::Uuid::new_v4().to_string(),
             name: input.name,
             local_path: input.local_path,
             group_id: input.group_id,
+            position,
             created_at: chrono::Local::now().to_rfc3339(),
             linked_profiles,
             remote_workspaces,
             agent_bindings: normalize_agent_bindings(input.agent_bindings),
         };
 
-        let mut guard = self.projects.lock().await;
-        guard.push(project.clone());
-        self.persist(&guard)?;
+        let mut next = guard.clone();
+        next.push(project.clone());
+        self.persist(&next)?;
+        *guard = next;
         Ok(project)
     }
 
@@ -121,18 +129,27 @@ impl ProjectStore {
             .position(|p| p.id == id)
             .ok_or_else(|| format!("project not found: {id}"))?;
 
-        let project = &mut guard[idx];
+        let old_group = guard[idx].group_id.clone();
+        let moved_position =
+            (old_group != input.group_id).then(|| next_position(&guard, input.group_id.as_deref()));
+        let mut next = guard.clone();
+        let project = &mut next[idx];
         project.name = input.name;
         project.local_path = input.local_path;
         project.group_id = input.group_id;
+        if let Some(position) = moved_position {
+            project.position = position;
+        }
         let (linked_profiles, remote_workspaces) =
             normalize_workspaces(input.linked_profiles, input.remote_workspaces);
         project.linked_profiles = linked_profiles;
         project.remote_workspaces = remote_workspaces;
         project.agent_bindings = normalize_agent_bindings(input.agent_bindings);
 
-        let result = project.clone();
-        self.persist(&guard)?;
+        normalize_positions(&mut next);
+        let result = next[idx].clone();
+        self.persist(&next)?;
+        *guard = next;
         Ok(result)
     }
 
@@ -233,13 +250,43 @@ impl ProjectStore {
     }
 
     pub async fn move_to_group(&self, id: &str, group_id: Option<String>) -> Result<(), String> {
+        self.move_to_position(id, group_id, i32::MAX)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn move_to_position(
+        &self,
+        id: &str,
+        group_id: Option<String>,
+        position: i32,
+    ) -> Result<Project, String> {
         let mut guard = self.projects.lock().await;
-        let project = guard
-            .iter_mut()
-            .find(|project| project.id == id)
+        let index = guard
+            .iter()
+            .position(|item| item.id == id)
             .ok_or("项目不存在")?;
-        project.group_id = group_id;
-        self.persist(&guard)
+        let mut next = guard.clone();
+        next[index].group_id = group_id.clone();
+        let mut siblings = next
+            .iter()
+            .enumerate()
+            .filter(|(candidate, item)| *candidate != index && item.group_id == group_id)
+            .map(|(candidate, item)| (candidate, item.position))
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|(_, order)| *order);
+        let insert_at = usize::try_from(position.max(0))
+            .unwrap_or(usize::MAX)
+            .min(siblings.len());
+        siblings.insert(insert_at, (index, 0));
+        for (order, (candidate, _)) in siblings.into_iter().enumerate() {
+            next[candidate].position = order as i32;
+        }
+        normalize_positions(&mut next);
+        let result = next[index].clone();
+        self.persist(&next)?;
+        *guard = next;
+        Ok(result)
     }
 
     pub async fn remove_profile_refs(&self, profile_id: &str) -> Result<usize, String> {
@@ -263,6 +310,35 @@ impl ProjectStore {
 
     fn persist(&self, projects: &[Project]) -> Result<(), String> {
         self.database.save("projects", projects)
+    }
+}
+
+fn next_position(projects: &[Project], group_id: Option<&str>) -> i32 {
+    projects
+        .iter()
+        .filter(|item| item.group_id.as_deref() == group_id)
+        .map(|item| item.position)
+        .max()
+        .unwrap_or(-1)
+        .saturating_add(1)
+}
+
+fn normalize_positions(projects: &mut [Project]) {
+    let groups = projects
+        .iter()
+        .map(|item| item.group_id.clone())
+        .collect::<HashSet<_>>();
+    for group_id in groups {
+        let mut siblings = projects
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.group_id == group_id)
+            .map(|(index, item)| (index, item.position))
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|(index, position)| (*position, *index));
+        for (position, (index, _)) in siblings.into_iter().enumerate() {
+            projects[index].position = position as i32;
+        }
     }
 }
 
@@ -332,8 +408,39 @@ mod tests {
 
     use super::{
         normalize_agent_bindings, normalize_workspaces, retain_known_agent_bindings,
-        ProjectAgentBinding, ProjectRemoteWorkspace,
+        ProjectAgentBinding, ProjectInput, ProjectRemoteWorkspace, ProjectStore,
     };
+    use crate::session::storage::AppDatabase;
+    use std::sync::Arc;
+
+    fn project_input(name: &str) -> ProjectInput {
+        ProjectInput {
+            name: name.into(),
+            local_path: format!("/tmp/{name}"),
+            group_id: None,
+            linked_profiles: vec![],
+            remote_workspaces: vec![],
+            agent_bindings: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn moving_project_reindexes_siblings() {
+        let store = ProjectStore::new(Arc::new(AppDatabase::memory()));
+        let first = store.create(project_input("A")).await.unwrap();
+        let second = store.create(project_input("B")).await.unwrap();
+        store.move_to_position(&second.id, None, 0).await.unwrap();
+        let items = store.list().await;
+        let mut ordered = items.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|item| item.position);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.id, first.id]
+        );
+    }
 
     #[test]
     fn missing_agent_bindings_are_compatible_and_bindings_are_normalized() {

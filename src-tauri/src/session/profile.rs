@@ -65,6 +65,9 @@ pub struct ConnectionProfile {
     /// 所属分组 id；None 表示未分组。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
+    /// 同一分组内的稳定顺序；旧配置由加载阶段按数组顺序补齐。
+    #[serde(default)]
+    pub position: i32,
     /// 跳板机：引用另一个已保存连接的 id（单跳 ProxyJump）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jump_profile_id: Option<String>,
@@ -92,7 +95,9 @@ pub struct ProfileStore {
 impl ProfileStore {
     /// 从 SQLite 加载（首次启动会兼容导入旧 JSON）。
     pub fn new(database: Arc<AppDatabase>) -> Self {
-        let profiles = database.load("profiles").ok().flatten().unwrap_or_default();
+        let mut profiles: Vec<ConnectionProfile> =
+            database.load("profiles").ok().flatten().unwrap_or_default();
+        normalize_positions(&mut profiles);
         Self {
             profiles: Mutex::new(profiles),
             database,
@@ -124,6 +129,8 @@ impl ProfileStore {
             input.passphrase,
         )?;
 
+        let mut guard = self.profiles.lock().await;
+        let position = next_position(&guard, input.group_id.as_deref());
         let profile = ConnectionProfile {
             id,
             name: input.name,
@@ -133,15 +140,17 @@ impl ProfileStore {
             auth_method: input.auth_method,
             private_key_path: input.private_key_path,
             group_id: input.group_id,
+            position,
             jump_profile_id: input.jump_profile_id,
             encoding: input.encoding,
             keepalive_interval: input.keepalive_interval,
             startup_command: input.startup_command,
             environment: input.environment,
         };
-        let mut guard = self.profiles.lock().await;
-        guard.push(profile.clone());
-        self.persist(&guard)?;
+        let mut next = guard.clone();
+        next.push(profile.clone());
+        self.persist(&next)?;
+        *guard = next;
         Ok(profile)
     }
 
@@ -166,6 +175,7 @@ impl ProfileStore {
                         Some(alias) => ids.get(alias).cloned(),
                         None => Some(value),
                     });
+            let position = next_position(&guard, input.group_id.as_deref());
             guard.push(ConnectionProfile {
                 id,
                 name: input.name,
@@ -175,6 +185,7 @@ impl ProfileStore {
                 auth_method: input.auth_method,
                 private_key_path: input.private_key_path,
                 group_id: input.group_id,
+                position,
                 jump_profile_id,
                 encoding: input.encoding,
                 keepalive_interval: input.keepalive_interval,
@@ -244,7 +255,14 @@ impl ProfileStore {
             return Err("跳板机不能指向自身".to_string());
         }
 
-        guard[idx] = ConnectionProfile {
+        let old_group = guard[idx].group_id.clone();
+        let position = if old_group == input.group_id {
+            guard[idx].position
+        } else {
+            next_position(&guard, input.group_id.as_deref())
+        };
+        let mut next = guard.clone();
+        next[idx] = ConnectionProfile {
             id: id.to_string(),
             name: input.name,
             host: input.host,
@@ -253,14 +271,17 @@ impl ProfileStore {
             auth_method: input.auth_method,
             private_key_path: input.private_key_path,
             group_id: input.group_id,
+            position,
             jump_profile_id: input.jump_profile_id,
             encoding: input.encoding,
             keepalive_interval: input.keepalive_interval,
             startup_command: input.startup_command,
             environment: input.environment,
         };
-        let updated = guard[idx].clone();
-        self.persist(&guard)?;
+        normalize_positions(&mut next);
+        let updated = next[idx].clone();
+        self.persist(&next)?;
+        *guard = next;
         Ok(updated)
     }
 
@@ -399,13 +420,43 @@ impl ProfileStore {
     }
 
     pub async fn move_to_group(&self, id: &str, group_id: Option<String>) -> Result<(), String> {
+        self.move_to_position(id, group_id, i32::MAX)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn move_to_position(
+        &self,
+        id: &str,
+        group_id: Option<String>,
+        position: i32,
+    ) -> Result<ConnectionProfile, String> {
         let mut guard = self.profiles.lock().await;
-        let profile = guard
-            .iter_mut()
-            .find(|profile| profile.id == id)
+        let index = guard
+            .iter()
+            .position(|item| item.id == id)
             .ok_or("连接配置不存在")?;
-        profile.group_id = group_id;
-        self.persist(&guard)
+        let mut next = guard.clone();
+        next[index].group_id = group_id.clone();
+        let mut siblings = next
+            .iter()
+            .enumerate()
+            .filter(|(candidate, item)| *candidate != index && item.group_id == group_id)
+            .map(|(candidate, item)| (candidate, item.position))
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|(_, order)| *order);
+        let insert_at = usize::try_from(position.max(0))
+            .unwrap_or(usize::MAX)
+            .min(siblings.len());
+        siblings.insert(insert_at, (index, 0));
+        for (order, (candidate, _)) in siblings.into_iter().enumerate() {
+            next[candidate].position = order as i32;
+        }
+        normalize_positions(&mut next);
+        let result = next[index].clone();
+        self.persist(&next)?;
+        *guard = next;
+        Ok(result)
     }
 
     /// 删除跳板 profile 时，清除其他配置对它的引用。
@@ -577,6 +628,35 @@ impl ProfileStore {
 
     fn persist(&self, profiles: &[ConnectionProfile]) -> Result<(), String> {
         self.database.save("profiles", profiles)
+    }
+}
+
+fn next_position(profiles: &[ConnectionProfile], group_id: Option<&str>) -> i32 {
+    profiles
+        .iter()
+        .filter(|item| item.group_id.as_deref() == group_id)
+        .map(|item| item.position)
+        .max()
+        .unwrap_or(-1)
+        .saturating_add(1)
+}
+
+fn normalize_positions(profiles: &mut [ConnectionProfile]) {
+    let groups = profiles
+        .iter()
+        .map(|item| item.group_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    for group_id in groups {
+        let mut siblings = profiles
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.group_id == group_id)
+            .map(|(index, item)| (index, item.position))
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|(index, position)| (*position, *index));
+        for (position, (index, _)) in siblings.into_iter().enumerate() {
+            profiles[index].position = position as i32;
+        }
     }
 }
 

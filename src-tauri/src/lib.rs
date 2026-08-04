@@ -225,6 +225,7 @@ pub fn run() {
             commands::resource_group_create,
             commands::resource_group_move,
             commands::resource_item_move,
+            commands::resource_tree_move,
             commands::resource_group_delete_preview,
             commands::resource_group_delete,
             commands::monitor_snapshot,
@@ -282,6 +283,7 @@ pub fn run() {
             commands::snippet_delete,
             // 本地文件
             commands::local_home_dir,
+            commands::local_path_is_dir,
             commands::local_list_dir,
             commands::local_read_file,
             commands::local_write_file,

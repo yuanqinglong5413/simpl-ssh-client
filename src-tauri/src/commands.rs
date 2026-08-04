@@ -1105,6 +1105,64 @@ pub async fn resource_item_move(
 }
 
 #[derive(Serialize)]
+pub struct ResourceTreeMoveResult {
+    pub kind: String,
+    pub node_type: String,
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub position: i32,
+}
+
+/// 原子移动资源树节点。先完成目标类型与循环校验，持久化成功后才替换内存状态。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri 将三个 State 与五个公开命令字段分别注入。
+pub async fn resource_tree_move(
+    groups: tauri::State<'_, GroupStore>,
+    profiles: tauri::State<'_, ProfileStore>,
+    projects: tauri::State<'_, ProjectStore>,
+    kind: String,
+    node_type: String,
+    id: String,
+    parent_id: Option<String>,
+    position: i32,
+) -> Result<ResourceTreeMoveResult, String> {
+    if !matches!(kind.as_str(), "connection" | "project") {
+        return Err("未知资源树类型".into());
+    }
+    if let Some(parent) = parent_id.as_deref() {
+        let target = groups.find(parent).await.ok_or("目标分组不存在")?;
+        if target.kind != kind {
+            return Err("不能跨资源树移动资源".into());
+        }
+    }
+    let (resolved_parent, resolved_position) = match node_type.as_str() {
+        "group" => {
+            let moved = groups.move_group(&id, parent_id, position).await?;
+            (moved.parent_id, moved.order)
+        }
+        "item" => match kind.as_str() {
+            "connection" => {
+                let moved = profiles.move_to_position(&id, parent_id, position).await?;
+                (moved.group_id, moved.position)
+            }
+            "project" => {
+                let moved = projects.move_to_position(&id, parent_id, position).await?;
+                (moved.group_id, moved.position)
+            }
+            _ => unreachable!(),
+        },
+        _ => return Err("未知资源节点类型".into()),
+    };
+    Ok(ResourceTreeMoveResult {
+        kind,
+        node_type,
+        id,
+        parent_id: resolved_parent,
+        position: resolved_position,
+    })
+}
+
+#[derive(Serialize)]
 pub struct ResourceGroupDeletePreview {
     pub group_count: usize,
     pub connection_count: usize,
@@ -1992,6 +2050,21 @@ pub async fn local_home_dir() -> Result<String, String> {
     dirs::home_dir()
         .map(|h| h.to_string_lossy().into_owned())
         .ok_or_else(|| "无法定位家目录".to_string())
+}
+
+/// 判断系统拖入路径的类型。拖放上传需要在入队前区分文件与目录，
+/// 避免把目录错误地交给单文件传输任务。
+#[tauri::command]
+pub async fn local_path_is_dir(path: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("为安全起见，不支持通过拖放上传符号链接".to_string());
+        }
+        Ok(metadata.is_dir())
+    })
+    .await
+    .map_err(|error| format!("本地路径检查任务意外终止：{error}"))?
 }
 
 /// 列出本地目录内容。

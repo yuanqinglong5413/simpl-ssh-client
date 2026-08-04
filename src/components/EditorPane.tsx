@@ -155,7 +155,7 @@ export function EditorPane({ sessionId, filePath, onTitleChange, onDirtyChange }
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      if (!e.repeat && (e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
         if (isDirty) save();
       }

@@ -86,14 +86,15 @@ function NodeView({
           active={active}
         />
         <div className="pane-actions">
-          <button title="左右分屏" onClick={() => split("horizontal")}>
+          <button title="左右分屏" aria-label="左右分屏" onClick={() => split("horizontal")}>
             <Columns size={14} />
           </button>
-          <button title="上下分屏" onClick={() => split("vertical")}>
+          <button title="上下分屏" aria-label="上下分屏" onClick={() => split("vertical")}>
             <Rows size={14} />
           </button>
           <button
             title="关闭面板"
+            aria-label="关闭终端面板"
             className="danger"
             onClick={() => onReplace(null)}
           >
@@ -153,7 +154,24 @@ function NodeView({
           onReplace={(n) => replaceChild(0, n)}
         />
       </div>
-      <div className="splitter" onPointerDown={startDrag} />
+      <div
+        className="splitter"
+        role="separator"
+        aria-label={dir === "horizontal" ? "调整左右终端面板宽度" : "调整上下终端面板高度"}
+        aria-orientation={dir === "horizontal" ? "vertical" : "horizontal"}
+        aria-valuemin={10}
+        aria-valuemax={90}
+        aria-valuenow={Math.round(ratio * 100)}
+        tabIndex={0}
+        onPointerDown={startDrag}
+        onDoubleClick={() => onReplace({ kind: "split", dir, ratio: 0.5, children })}
+        onKeyDown={(event) => {
+          const delta = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -0.05 : event.key === "ArrowRight" || event.key === "ArrowDown" ? 0.05 : 0;
+          if (!delta) return;
+          event.preventDefault();
+          onReplace({ kind: "split", dir, ratio: Math.max(0.1, Math.min(0.9, ratio + delta)), children });
+        }}
+      />
       <div className="split-child" style={{ flex: 1 - ratio }}>
         <NodeView
           node={children[1]}

@@ -35,6 +35,8 @@ export type ConnectionProfile = {
   auth_method?: AuthMethod;
   private_key_path?: string | null;
   group_id?: string | null;
+  /** 同一分组内的稳定显示顺序；旧数据缺省时按原数组顺序迁移。 */
+  position?: number;
   /** 跳板机：引用另一个已保存连接的 id */
   jump_profile_id?: string | null;
   /** 远程终端编码（utf-8/gbk/gb2312/big5）；默认 utf-8 */
@@ -123,6 +125,22 @@ export type Tab = {
   agentStatus?: "running" | "exited" | "failed";
   /** Agent 本次启动时间，仅用于项目任务状态展示；不会参与恢复。 */
   agentStartedAt?: string;
+};
+
+export type ResourceTreeMoveInput = {
+  kind: "connection" | "project";
+  nodeType: "group" | "item";
+  id: string;
+  parentId: string | null;
+  position: number;
+};
+
+export type ResourceTreeMoveResult = {
+  kind: "connection" | "project";
+  node_type: "group" | "item";
+  id: string;
+  parent_id: string | null;
+  position: number;
 };
 
 export type FileEntry = {
@@ -343,6 +361,7 @@ export type Project = {
   name: string;
   local_path: string;
   group_id: string | null;
+  position?: number;
   created_at: string;
   linked_profiles: string[];
   /** 项目关联的远程工作区。旧项目仅有 linked_profiles 时视为未指定远程根目录。 */

@@ -71,9 +71,10 @@ export function TerminalFileWorkspace({
         <button type="button" role="tab" aria-selected={view === "files"} className={view === "files" ? "active" : ""} onClick={() => onViewChange("files")}>
           <Folder size={14} /> 文件
         </button>
-        <button type="button" role="tab" aria-selected={view === "split"} className={view === "split" ? "active" : ""} onClick={() => onViewChange("split")} disabled={compact} title={compact ? "当前宽度不足以安全分屏" : "同时显示终端和文件"}>
+        <button type="button" role="tab" aria-selected={effectiveView === "split"} className={effectiveView === "split" ? "active" : ""} onClick={() => onViewChange("split")} disabled={compact} title={compact ? "当前宽度不足，已暂时显示终端" : "同时显示终端和文件"}>
           <Columns2 size={14} /> 分屏
         </button>
+        {compact && view === "split" && <span className="terminal-file-compact-note" role="status">宽度不足，分屏已暂时收起</span>}
         {effectiveView === "split" && <button type="button" title={splitDirection === "horizontal" ? "改为上下分屏" : "改为左右分屏"} aria-label={splitDirection === "horizontal" ? "改为上下分屏" : "改为左右分屏"} onClick={() => onSplitChange(splitDirection === "horizontal" ? "vertical" : "horizontal", splitRatio)}>{splitDirection === "horizontal" ? <Rows2 size={14} /> : <Columns2 size={14} />}</button>}
       </div>
       <div className="terminal-file-content" ref={contentRef}>

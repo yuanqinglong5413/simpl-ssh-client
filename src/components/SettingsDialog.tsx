@@ -40,9 +40,9 @@ const CATEGORY_ICONS: Record<PreferenceCategoryId, LucideIcon> = {
 };
 
 const SHORTCUT_GROUPS = [
-  ["工作台", [["新建连接", "⌘/Ctrl N"], ["打开设置", "⌘/Ctrl ,"], ["命令面板", "⌘/Ctrl K 或 P"]]],
+  ["工作台", [["新建连接", "⌘/Ctrl N"], ["打开设置", "⌘/Ctrl ,"], ["命令面板", "⌘/Ctrl Shift P"]]],
   ["标签", [["关闭当前标签", "⌘/Ctrl W"], ["下一个标签", "⌘/Ctrl Tab"], ["上一个标签", "⌘/Ctrl Shift Tab"]]],
-  ["终端", [["终端内搜索", "⌘/Ctrl F"], ["完整重绘", "Ctrl Alt R"]]],
+  ["终端", [["打开命令面板", "⌘/Ctrl Shift P"], ["其他按键", "全部发送到 PTY/TUI"]]],
 ] as const;
 
 /** IDEA 式偏好设置窗口：分类导航 + 全局搜索；所有修改立即持久化。 */
@@ -350,7 +350,7 @@ function CategorySettings(props: CategoryViewProps) {
       <SettingCard title="新增 Agent 启动项" description="定义名称与任意 shell 命令，再在项目中按需启用。"><div className="preference-agent-create"><input value={props.agentName} onChange={(event) => props.onAgentName(event.target.value)} placeholder="名称，例如 Aider" /><input value={props.agentCommand} onChange={(event) => props.onAgentCommand(event.target.value)} placeholder="命令，例如 aider --model ..." /><button type="button" className="btn btn-primary" disabled={!props.agentName.trim() || !props.agentCommand.trim()} onClick={() => { updateSettings({ agentPresets: [...settings.agentPresets, { id: crypto.randomUUID(), name: props.agentName.trim(), command: props.agentCommand.trim() }] }); props.onAgentName(""); props.onAgentCommand(""); }}><PlugZap size={14} /> 添加</button></div></SettingCard>
       <div className="preference-agent-list">{settings.agentPresets.length === 0 ? <div className="preferences-empty compact"><Bot size={20} /><strong>还没有 Agent 启动项</strong><span>可以添加任意 CLI、npx、项目脚本或 shell 命令。</span></div> : settings.agentPresets.map((preset) => <div key={preset.id} className="preference-agent-row"><input value={preset.name} aria-label="Agent 名称" onChange={(event) => updateSettings({ agentPresets: settings.agentPresets.map((item) => item.id === preset.id ? { ...item, name: event.target.value } : item) })} /><input value={preset.command} aria-label="Agent 命令" onChange={(event) => updateSettings({ agentPresets: settings.agentPresets.map((item) => item.id === preset.id ? { ...item, command: event.target.value } : item) })} /><button type="button" className="icon-btn danger" aria-label={`删除 ${preset.name}`} onClick={() => props.onDeleteAgent(preset)}><X size={15} /></button></div>)}</div>
     </>;
-    case "shortcuts": return <div className="preference-shortcuts">{SHORTCUT_GROUPS.map(([title, items]) => <SettingCard key={title} title={title} description="当前版本支持查看与搜索，快捷键映射不可修改。"><dl>{items.map(([label, shortcut]) => <div key={label}><dt>{label}</dt><dd><kbd>{shortcut}</kbd></dd></div>)}</dl></SettingCard>)}</div>;
+    case "shortcuts": return <div className="preference-shortcuts">{SHORTCUT_GROUPS.map(([title, items]) => <SettingCard key={title} title={title} description={title === "终端" ? "终端输入绝对优先；只有命令面板快捷键会被应用接管。" : "当前版本支持查看与搜索，快捷键映射不可修改。"}><dl>{items.map(([label, shortcut]) => <div key={label}><dt>{label}</dt><dd><kbd>{shortcut}</kbd></dd></div>)}</dl></SettingCard>)}</div>;
     case "updates": return <>
       <SettingCard title="应用更新" description="从 GitHub Release 检查并安装新版本。"><div className="preference-inline"><Toggle checked={settings.checkUpdatesOnStart} onChange={(checked) => updateSettings({ checkUpdatesOnStart: checked })} label="启动时检查" /><button type="button" className="btn btn-ghost" disabled={props.checking} onClick={props.onCheckUpdates}><RefreshCw size={14} /> {props.checking ? "检查中…" : "立即检查"}</button></div>{props.updateMessage && <p className="preference-status">{props.updateMessage}</p>}</SettingCard>
       <SettingCard title="关于 Simpl SSH" description="轻量级跨平台 SSH、SFTP 与远程开发工作台。"><div className="preference-about"><CircleHelp size={16} /><span>Simpl SSH v{props.appVersion}</span></div></SettingCard>

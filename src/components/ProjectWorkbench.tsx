@@ -256,7 +256,8 @@ export function ProjectWorkbench({ project, profiles, active, onOpenRemote, onDi
     }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; }).catch((reason) => toast(`项目任务状态监听失败：${String(reason)}`, "error"));
     return () => { disposed = true; unlisten?.(); };
   }, [project.local_path, refreshTree, toast]);
-  useEffect(() => { const handler = (event: KeyboardEvent) => { if (!active) return; const target = event.target instanceof HTMLElement ? event.target : null; if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight") && target?.closest(".local-editor-pane")) { event.preventDefault(); if (event.key === "ArrowLeft") navigateBack(); else navigateForwardToLocation(); return; } if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "p" || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || (event.target instanceof HTMLElement && event.target.isContentEditable)) return; event.preventDefault(); setQuickOpen(true); setQuickQuery(""); }; window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler); }, [active, currentNavigation, navigationForward, navigationHistory]);
+  useEffect(() => { const handler = (event: KeyboardEvent) => { if (!active || event.repeat) return; const target = event.target instanceof HTMLElement ? event.target : null; if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight") && target?.closest(".local-editor-pane")) { event.preventDefault(); if (event.key === "ArrowLeft") navigateBack(); else navigateForwardToLocation(); return; } if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "p" || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || (event.target instanceof HTMLElement && event.target.isContentEditable)) return; event.preventDefault(); setQuickOpen(true); setQuickQuery(""); }; window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler); }, [active, currentNavigation, navigationForward, navigationHistory]);
+  useEffect(() => { const open = () => { if (active) { setQuickOpen(true); setQuickQuery(""); } }; window.addEventListener("simpl-ssh:project-quick-open", open); return () => window.removeEventListener("simpl-ssh:project-quick-open", open); }, [active]);
 
   function openFile(path: string, preserveNavigation = false) { setMissingFiles((current) => { const next = new Set(current); next.delete(path); return next; }); setOpenFiles((current) => current.includes(path) ? current : [...current, path]); setActiveFile(path); if (!preserveNavigation) setCurrentNavigation({ filePath: path, line: 0, character: 0 }); if (splitEditors && !secondaryFile) setSecondaryFile(path); }
   function applyNavigationTarget(requestId: number) { setNavigationTarget((current) => current?.requestId === requestId ? null : current); }
@@ -279,6 +280,7 @@ export function ProjectWorkbench({ project, profiles, active, onOpenRemote, onDi
   useEffect(() => {
     if (!active) return;
     const handler = (event: KeyboardEvent) => {
+      if (event.repeat) return;
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "t") return;
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) return;

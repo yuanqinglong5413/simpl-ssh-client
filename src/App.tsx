@@ -4,7 +4,7 @@ import { BroadcastContext } from "./broadcast";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { sendNotification } from "@tauri-apps/plugin-notification";
-import { MonitorCog, RefreshCw } from "lucide-react";
+import { ArrowLeft, ArrowRight, MonitorCog, RefreshCw, Search, Sparkles } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { WorkspaceActions } from "./components/WorkspaceActions";
 import { ProjectSidebar } from "./components/ProjectSidebar";
@@ -142,6 +142,13 @@ function App() {
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
   const [shuttingDown, setShuttingDown] = useState(false);
   useEffect(() => {
+    const closeNarrowSidebar = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && window.innerWidth <= 860 && !settings.sidebarCollapsed && !document.querySelector('[role="dialog"]')) updateSettings({ sidebarCollapsed: true });
+    };
+    window.addEventListener("keydown", closeNarrowSidebar);
+    return () => window.removeEventListener("keydown", closeNarrowSidebar);
+  }, [settings.sidebarCollapsed, updateSettings]);
+  useEffect(() => {
     let dispose: (() => void) | undefined;
     void listen<string>("app://shutdown-progress", (event) => setShuttingDown(event.payload !== "done")).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
@@ -178,6 +185,7 @@ function App() {
   const intentionalDisconnectRef = useRef<Set<string>>(new Set());
   /** 正在重连中的 session，防止分屏多 pane 重复触发 */
   const reconnectingRef = useRef<Set<string>>(new Set());
+  const resourceMovesRef = useRef<Set<string>>(new Set());
   const sessionEnvironments = useMemo(() => Object.fromEntries(sessions.map((session) => [
     session.id,
     profiles.find((profile) => profile.id === sessionProfileRef.current.get(session.id))?.environment,
@@ -646,7 +654,7 @@ function App() {
   });
   const hasWorkspaceRecovery = workspaceRestoreIssues.length > 0 || workspaceRestoreLoadError !== null;
   const hasTransientWorkspaceIssue = workspaceRestoreIssues.some((issue) => issue.kind === "transient");
-  const { add: addActivity } = useActivity();
+  const { add: addActivity, items: activities } = useActivity();
   useEffect(() => {
     let alive = true;
     void invoke<{
@@ -884,14 +892,28 @@ function App() {
     }
   }
 
-  async function moveResourceGroup(id: string, parentId: string | null, kind: "connection" | "project") {
-    try { await invoke("resource_group_move", { id, parentId, position: 2_147_483_647 }); if (kind === "connection") await refreshGroups(); else await refreshProjectGroups(); }
-    catch (error) { showToast(String(error)); }
+  async function moveResourceGroup(id: string, parentId: string | null, kind: "connection" | "project", position = Number.MAX_SAFE_INTEGER) {
+    const key = `${kind}:group:${id}`;
+    if (resourceMovesRef.current.has(key)) return;
+    resourceMovesRef.current.add(key);
+    try {
+      await invoke("resource_tree_move", { kind, nodeType: "group", id, parentId, position: Math.min(2_147_483_647, position) });
+      if (kind === "connection") await refreshGroups(); else await refreshProjectGroups();
+    } catch (error) {
+      throw error;
+    } finally { resourceMovesRef.current.delete(key); }
   }
 
-  async function moveResourceItem(id: string, groupId: string | null, kind: "connection" | "project") {
-    try { await invoke("resource_item_move", { kind, id, groupId }); if (kind === "connection") await refreshProfiles(); else await refreshProjects(); }
-    catch (error) { showToast(String(error)); }
+  async function moveResourceItem(id: string, groupId: string | null, kind: "connection" | "project", position = Number.MAX_SAFE_INTEGER) {
+    const key = `${kind}:item:${id}`;
+    if (resourceMovesRef.current.has(key)) return;
+    resourceMovesRef.current.add(key);
+    try {
+      await invoke("resource_tree_move", { kind, nodeType: "item", id, parentId: groupId, position: Math.min(2_147_483_647, position) });
+      if (kind === "connection") await refreshProfiles(); else await refreshProjects();
+    } catch (error) {
+      throw error;
+    } finally { resourceMovesRef.current.delete(key); }
   }
 
   async function disconnect(id: string) {
@@ -1005,10 +1027,19 @@ function App() {
       projects: projects.map((p) => ({ id: p.id, name: p.name })),
     }),
     ...(activeTerminalPaneId ? [
+      { id: "terminal:search", label: "终端：搜索当前缓冲", description: "终端按键保持透传，请从命令面板打开搜索", icon: Search, category: "action" as const, action: () => window.dispatchEvent(new CustomEvent("simpl-ssh:terminal-search", { detail: { paneId: activeTerminalPaneId } })) },
       { id: "terminal:diagnostics", label: "终端：打开诊断", description: "查看渲染器、TUI 原始输出和布局状态", icon: MonitorCog, category: "action" as const, action: () => openTerminalDiagnostics(activeTerminalPaneId) },
       { id: "terminal:redraw", label: "终端：重新绘制", description: "清理当前渲染器缓存并完整刷新", icon: RefreshCw, category: "action" as const, action: () => redrawTerminal(activeTerminalPaneId) },
       { id: "terminal:canvas", label: "终端：当前标签改用 Canvas", description: "仅当前终端标签降级，不修改全局设置", icon: MonitorCog, category: "action" as const, action: () => forceTerminalCanvas(activeTerminalPaneId) },
     ] : []),
+    ...(activeTab?.kind === "project-workbench" ? [{ id: "project:quick-open", label: "项目：快速打开文件", description: activeTab.title, shortcut: "⌘/Ctrl P", icon: Search, category: "action" as const, action: () => window.dispatchEvent(new CustomEvent("simpl-ssh:project-quick-open")) }] : []),
+    ...projects.flatMap((project) => (project.agent_bindings ?? []).flatMap((binding) => {
+      const preset = agentPresets.find((item) => item.id === binding.preset_id);
+      return preset ? [{ id: `agent:${project.id}:${preset.id}`, label: `Agent：${preset.name}`, description: `${project.name} · ${binding.command_override || preset.command}`, icon: Sparkles, category: "action" as const, action: () => launchProjectAgent(project, binding) }] : [];
+    })),
+    ...activities.slice(0, 20).map((item) => ({ id: `activity:${item.id}`, label: `需要处理：${item.title}`, description: item.detail, icon: RefreshCw, category: "action" as const, action: () => openTaskDrawer(item.kind === "transfer" ? "transfers" : "activity") })),
+    { id: "tab:next", label: "标签：切换到下一个", shortcut: "⌘/Ctrl Tab", icon: ArrowRight, category: "tab" as const, action: () => cycleTab(1) },
+    { id: "tab:previous", label: "标签：切换到上一个", shortcut: "⌘/Ctrl Shift Tab", icon: ArrowLeft, category: "tab" as const, action: () => cycleTab(-1) },
   ];
 
   return (
@@ -1033,8 +1064,8 @@ function App() {
           onCreateGroup={createGroup}
           onRenameGroup={renameGroup}
           onDeleteGroup={deleteGroup}
-          onMoveGroup={(id, parentId) => moveResourceGroup(id, parentId, "connection")}
-          onMoveProfile={(id, groupId) => moveResourceItem(id, groupId, "connection")}
+          onMoveGroup={(id, parentId, position) => moveResourceGroup(id, parentId, "connection", position)}
+          onMoveProfile={(id, groupId, position) => moveResourceItem(id, groupId, "connection", position)}
           onNew={() => setShowConnect(true)}
           onImportSshConfig={importSshConfig}
           onModeChange={setMode}
@@ -1047,8 +1078,8 @@ function App() {
           onCreateGroup={(name, parentId) => createGroup(name, parentId, "project")}
           onRenameGroup={(id, name) => renameGroup(id, name, "project")}
           onDeleteGroup={(id) => deleteGroup(id, "project")}
-          onMoveGroup={(id, parentId) => moveResourceGroup(id, parentId, "project")}
-          onMoveProject={(id, groupId) => moveResourceItem(id, groupId, "project")}
+          onMoveGroup={(id, parentId, position) => moveResourceGroup(id, parentId, "project", position)}
+          onMoveProject={(id, groupId, position) => moveResourceItem(id, groupId, "project", position)}
           onConnectProject={openProjectWorkspace}
           onOpenLocalTerminal={openProjectLocalTerminal}
           onOpenRemote={openProjectRemote}
@@ -1067,6 +1098,7 @@ function App() {
           onActivateAgentTab={setActiveTabId}
         />
       )}
+      <button type="button" className="sidebar-mobile-scrim" aria-label="关闭资源侧栏" onClick={() => updateSettings({ sidebarCollapsed: true })} />
 
       <div className="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="调整资源侧栏宽度" onPointerDown={startSidebarResize} />
 
@@ -1076,6 +1108,15 @@ function App() {
           activeTabId={activeTabId}
           onActivate={setActiveTabId}
           onClose={closeTab}
+          onReorder={(activeId, overId) => setTabs((current) => {
+            const from = current.findIndex((tab) => tab.id === activeId);
+            const to = current.findIndex((tab) => tab.id === overId);
+            if (from < 0 || to < 0 || from === to) return current;
+            const next = [...current];
+            const [moved] = next.splice(from, 1);
+            next.splice(to, 0, moved);
+            return next;
+          })}
           onNew={mode === "ssh" ? () => setShowConnect(true) : undefined}
         />
 
