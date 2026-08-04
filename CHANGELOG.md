@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-08-04
+
+### 修复
+- **托管 LSP 可安装性**：发布稳定签名目录及 macOS Apple Silicon 自包含运行时，首次进入插件目录自动同步可信目录，不再把尚未同步的空目录误报为平台不支持。
+- **托管运行时路径**：运行参数支持安全的插件根目录占位符，使内置 Node、JRE 与语言服务入口不依赖项目目录或系统 PATH。
+
 ## [0.12.3] - 2026-08-04
 
 ### 新增
@@ -206,7 +212,8 @@
 - `check_server_key` 暂接受任意主机公钥（仅适合本地可信网络）。
 - 终端走明文 `ws://`（开发模式无碍；生产环境打包后需改 wss 或走 IPC）。
 
-[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.4...HEAD
+[0.12.4]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/yuanqinglong5413/simpl-ssh-client/compare/v0.12.0...v0.12.1

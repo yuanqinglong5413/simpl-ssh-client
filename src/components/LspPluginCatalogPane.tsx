@@ -39,7 +39,24 @@ export function LspPluginCatalogPane() {
     updateSettings({ installedLspPlugins: nextInstalled });
   }, [updateSettings]);
 
-  useEffect(() => { void reload().catch((reason) => setError(String(reason))); }, [reload]);
+  useEffect(() => {
+    let active = true;
+    async function loadTrustedCatalog() {
+      setBusy("catalog");
+      try {
+        // The catalog is small and signed. Refreshing it here keeps a freshly installed
+        // client from rendering the empty built-in fallback as "platform unavailable".
+        await invoke("lsp_plugin_refresh_catalog");
+      } catch {
+        // Offline users can still use an already verified cached catalog.
+      }
+      if (!active) return;
+      setBusy(null);
+      await reload();
+    }
+    void loadTrustedCatalog().catch((reason) => active && setError(String(reason)));
+    return () => { active = false; };
+  }, [reload]);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle ? catalog.filter((plugin) => `${plugin.name} ${plugin.description} ${plugin.languages.map((language) => language.id).join(" ")}`.toLowerCase().includes(needle)) : catalog;

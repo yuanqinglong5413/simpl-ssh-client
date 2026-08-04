@@ -632,14 +632,14 @@ impl LspPluginManager {
         let canonical_executable = executable
             .canonicalize()
             .map_err(|error| format!("插件可执行文件不存在：{error}"))?;
-        if !canonical_executable.starts_with(canonical_root)
+        if !canonical_executable.starts_with(&canonical_root)
             || !is_executable(&canonical_executable)
         {
             return Err("插件可执行文件不在受控目录内".into());
         }
         Ok((
             canonical_executable.to_string_lossy().into_owned(),
-            runtime.args.clone(),
+            resolve_runtime_args(&canonical_root, &runtime.args),
         ))
     }
     fn plugin_root(&self, app: &AppHandle, id: &str, version: &str) -> Result<PathBuf, String> {
@@ -949,6 +949,13 @@ fn platform_key() -> &'static str {
     }
 }
 
+fn resolve_runtime_args(plugin_root: &Path, args: &[String]) -> Vec<String> {
+    let root = plugin_root.to_string_lossy();
+    args.iter()
+        .map(|arg| arg.replace("${pluginRoot}", &root))
+        .collect()
+}
+
 fn builtin_catalog() -> Vec<LspPluginManifest> {
     [
         (
@@ -1099,5 +1106,21 @@ mod tests {
         assert!(!destination.parent().unwrap().join("escape").exists());
         let _ = std::fs::remove_file(archive);
         let _ = std::fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn resolves_plugin_root_in_runtime_arguments() {
+        let root = Path::new("/tmp/simpl ssh/lsp/jdtls/1.57.0");
+        let args = vec![
+            "-jar".to_string(),
+            "${pluginRoot}/server/launcher.jar".to_string(),
+        ];
+        assert_eq!(
+            resolve_runtime_args(root, &args),
+            vec![
+                "-jar".to_string(),
+                "/tmp/simpl ssh/lsp/jdtls/1.57.0/server/launcher.jar".to_string(),
+            ]
+        );
     }
 }
