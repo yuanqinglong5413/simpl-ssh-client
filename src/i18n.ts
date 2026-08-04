@@ -4,7 +4,7 @@ import { initReactI18next } from "react-i18next";
 const STORE_KEY = "simpl-ssh-lang";
 
 /**
- * i18n 框架。当前含状态栏（StatusBar）的完整 zh/en 翻译作为机制示例；
+ * i18n 框架。所有新增界面文案应从这里取值，避免组件继续硬编码语言；
  * 其余组件文案的完整抽取/翻译作为后续专项（涉及全 UI 文案）。
  */
 i18n.use(initReactI18next).init({

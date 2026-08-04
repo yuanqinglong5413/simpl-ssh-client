@@ -52,10 +52,12 @@ tauri-plugin-notification = "2"
 portable-pty = "0.8"
 ignore = "0.4"
 libc = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 ed25519-dalek = "2"
 base64 = "0.22"
 zip = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+glob = "0.3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

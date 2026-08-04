@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { invokeWithTimeout } from "../utils/invokeWithTimeout";
 import type {
   ConnectionProfile,
@@ -88,6 +89,10 @@ function snapshotFromTabs(tabs: Tab[], activeTabId: string | null): WorkspaceSna
         projectId: tab.projectId ?? null,
         localPath: tab.localPath,
         startupCommand: tab.startupCommand,
+        terminalView: tab.terminalView,
+        sftpOpened: tab.sftpOpened,
+        terminalFileSplitDirection: tab.terminalFileSplitDirection,
+        terminalFileSplitRatio: tab.terminalFileSplitRatio,
         agentPresetId: tab.agentPresetId,
       })
     ).filter((tab) => !tab.agentPresetId),
@@ -331,6 +336,22 @@ export function useWorkspaceRestore({
     };
   }, [activeTabId, saveEnabled, showToast, tabs, writeSnapshot]);
 
+  // 窗口关闭、托盘退出和系统退出都由后端协调器触发该事件。绕过 500ms
+  // debounce 立即持久化最新内存快照，避免最后一次分屏/标签切换丢失。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("app://shutdown-requested", () => {
+      if (!saveEnabled) return;
+      const operation = tabs.length > 0
+        ? writeSnapshot(snapshotFromTabs(tabs, activeTabId))
+        : invoke("workspace_clear");
+      void operation.catch(() => {
+        // 关闭阶段无法安全打断用户；数据库仍保留上一份原子快照。
+      });
+    }).then((dispose) => { unlisten = dispose; });
+    return () => unlisten?.();
+  }, [activeTabId, saveEnabled, tabs, writeSnapshot]);
+
   return {
     issues,
     loadError,
@@ -360,16 +381,23 @@ export function restoreLocalTab(tab: WorkspaceTab): Tab {
 }
 
 function restoreRemoteTab(tab: WorkspaceTab, sessionId: string): Tab {
+  // 旧版本把文件面板保存为独立 sftp 标签。恢复时把它迁移为同一个 SSH
+  // 工作区中的文件视图，后续切回终端不会再创建第二个标签。
+  const legacySftp = tab.kind === "sftp";
   const restored: Tab = {
     id: tab.id,
     sessionId,
     title: tab.title,
-    kind: tab.kind,
+    kind: legacySftp ? "terminal" : tab.kind,
     filePath: tab.filePath,
     repoPath: tab.repoPath,
     remoteRoot: tab.remoteRoot ?? (tab.kind === "sftp" ? tab.repoPath : undefined),
     startupCommand: tab.startupCommand,
     profileId: tab.profileId ?? undefined,
+    terminalView: legacySftp ? "files" : tab.terminalView,
+    sftpOpened: legacySftp || tab.sftpOpened,
+    terminalFileSplitDirection: tab.terminalFileSplitDirection ?? "horizontal",
+    terminalFileSplitRatio: Math.max(0.25, Math.min(0.75, tab.terminalFileSplitRatio ?? 0.58)),
   };
   if (tab.layout) restored.layout = replaceSessionInLayout(tab.layout, tab.sessionId, sessionId);
   else if (tab.kind === "terminal") restored.layout = { kind: "leaf", paneId: crypto.randomUUID(), sessionId };

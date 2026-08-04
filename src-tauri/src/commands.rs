@@ -24,12 +24,32 @@ use crate::session::pty::TerminalPipes;
 use crate::session::sftp::{list_dir, FileEntry, SftpManager};
 use crate::session::transfer::{TransferKind, TransferQueue};
 use crate::session::{
-    connect_and_exec, AuthMethod, HostKeyVerifier, InstalledLspPlugin, LocalPtyRegistry,
-    LspManager, LspPluginManager, LspPluginManifest, LspRequest, LspState, MonitorSnapshot,
-    MonitorStore, Project, ProjectBatchJob, ProjectBatchManager, ProjectIndexManager, ProjectInput,
-    ProjectSearchManager, ProjectStore, ProjectWatchManager, SessionInfo, SessionManager, SshAuth,
-    SshConnectParams, TaskRunner, TerminalBridge, WorkspaceStore,
+    connect_and_exec, AppDatabase, AuthMethod, HostKeyVerifier, InstalledLspPlugin,
+    LocalPtyRegistry, LspManager, LspPluginManager, LspPluginManifest, LspRequest, LspState,
+    MonitorSnapshot, MonitorStore, Project, ProjectBatchJob, ProjectBatchManager,
+    ProjectIndexManager, ProjectInput, ProjectSearchManager, ProjectStore, ProjectWatchManager,
+    SessionInfo, SessionManager, SshAuth, SshConnectParams, TaskRunner, TerminalBridge,
+    WorkspaceStore,
 };
+
+#[tauri::command]
+pub fn storage_status(
+    database: tauri::State<'_, Arc<AppDatabase>>,
+) -> Result<crate::session::storage::StorageStatus, String> {
+    database.status()
+}
+
+#[tauri::command]
+pub fn storage_backup(database: tauri::State<'_, Arc<AppDatabase>>) -> Result<String, String> {
+    database.backup()
+}
+
+#[tauri::command]
+pub fn storage_retry_secret_cleanup(
+    profiles: tauri::State<'_, ProfileStore>,
+) -> Result<usize, String> {
+    profiles.retry_secret_cleanup()
+}
 
 #[derive(Serialize)]
 pub struct ProjectSearchMatch {
@@ -984,10 +1004,13 @@ pub async fn profile_select_private_key() -> Result<Option<String>, String> {
 #[tauri::command]
 pub async fn profile_delete(
     state: tauri::State<'_, ProfileStore>,
+    projects: tauri::State<'_, ProjectStore>,
     id: String,
 ) -> Result<(), String> {
     state.clear_jump_refs(&id).await?;
-    state.delete(&id).await
+    state.delete(&id).await?;
+    projects.remove_profile_refs(&id).await?;
+    Ok(())
 }
 
 /// 从 ~/.ssh/config 导入连接配置，返回导入条数。
@@ -998,9 +1021,11 @@ pub async fn profiles_import_ssh_config(
     let path = dirs::home_dir()
         .map(|h| h.join(".ssh").join("config"))
         .ok_or_else(|| "无法定位 ~/.ssh/config".to_string())?;
-    let content = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| format!("读取 ~/.ssh/config 失败：{e}"))?;
+    let content = tokio::task::spawn_blocking(move || {
+        crate::session::import::read_ssh_config_with_includes(&path)
+    })
+    .await
+    .map_err(|error| format!("SSH Config 导入任务失败：{error}"))??;
     let inputs = crate::session::import::parse_ssh_config(&content);
     state.import_many(inputs).await
 }
@@ -1033,7 +1058,122 @@ pub async fn profile_connect(
 pub async fn group_list(
     state: tauri::State<'_, GroupStore>,
 ) -> Result<Vec<crate::session::groups::ProfileGroup>, String> {
-    Ok(state.list().await)
+    Ok(state.list_kind("connection").await)
+}
+
+#[tauri::command]
+pub async fn resource_group_list(
+    state: tauri::State<'_, GroupStore>,
+    kind: String,
+) -> Result<Vec<crate::session::groups::ProfileGroup>, String> {
+    Ok(state.list_kind(&kind).await)
+}
+
+#[tauri::command]
+pub async fn resource_group_create(
+    state: tauri::State<'_, GroupStore>,
+    kind: String,
+    parent_id: Option<String>,
+    name: String,
+) -> Result<crate::session::groups::ProfileGroup, String> {
+    state.create_in(&kind, parent_id, name).await
+}
+
+#[tauri::command]
+pub async fn resource_group_move(
+    state: tauri::State<'_, GroupStore>,
+    id: String,
+    parent_id: Option<String>,
+    position: i32,
+) -> Result<crate::session::groups::ProfileGroup, String> {
+    state.move_group(&id, parent_id, position).await
+}
+
+#[tauri::command]
+pub async fn resource_item_move(
+    profiles: tauri::State<'_, ProfileStore>,
+    projects: tauri::State<'_, ProjectStore>,
+    kind: String,
+    id: String,
+    group_id: Option<String>,
+) -> Result<(), String> {
+    match kind.as_str() {
+        "connection" => profiles.move_to_group(&id, group_id).await,
+        "project" => projects.move_to_group(&id, group_id).await,
+        _ => Err("未知资源类型".into()),
+    }
+}
+
+#[derive(Serialize)]
+pub struct ResourceGroupDeletePreview {
+    pub group_count: usize,
+    pub connection_count: usize,
+    pub project_count: usize,
+    pub deletes_physical_files: bool,
+}
+
+async fn resource_delete_preview(
+    groups: &GroupStore,
+    profiles: &ProfileStore,
+    projects: &ProjectStore,
+    id: &str,
+) -> Result<(ResourceGroupDeletePreview, Vec<String>, String), String> {
+    let group = groups.find(id).await.ok_or("分组不存在")?;
+    let ids = groups.descendants(id).await?;
+    let connection_count = if group.kind == "connection" {
+        profiles.count_in_groups(&ids).await
+    } else {
+        0
+    };
+    let project_count = if group.kind == "project" {
+        projects.count_in_groups(&ids).await
+    } else {
+        0
+    };
+    Ok((
+        ResourceGroupDeletePreview {
+            group_count: ids.len(),
+            connection_count,
+            project_count,
+            deletes_physical_files: false,
+        },
+        ids,
+        group.kind,
+    ))
+}
+
+#[tauri::command]
+pub async fn resource_group_delete_preview(
+    groups: tauri::State<'_, GroupStore>,
+    profiles: tauri::State<'_, ProfileStore>,
+    projects: tauri::State<'_, ProjectStore>,
+    id: String,
+) -> Result<ResourceGroupDeletePreview, String> {
+    resource_delete_preview(groups.inner(), profiles.inner(), projects.inner(), &id)
+        .await
+        .map(|value| value.0)
+}
+
+#[tauri::command]
+pub async fn resource_group_delete(
+    groups: tauri::State<'_, GroupStore>,
+    profiles: tauri::State<'_, ProfileStore>,
+    projects: tauri::State<'_, ProjectStore>,
+    id: String,
+    confirmed: bool,
+) -> Result<ResourceGroupDeletePreview, String> {
+    if !confirmed {
+        return Err("递归删除需要明确确认".into());
+    }
+    let (preview, ids, kind) =
+        resource_delete_preview(groups.inner(), profiles.inner(), projects.inner(), &id).await?;
+    if kind == "connection" {
+        profiles.delete_in_groups(&ids).await?;
+    } else {
+        projects.delete_in_groups(&ids).await?;
+    }
+    groups.delete_tree(&ids).await?;
+    Ok(preview)
 }
 
 /// 新建连接分组。
@@ -1669,13 +1809,36 @@ pub async fn lsp_plugin_install(
 }
 
 #[tauri::command]
-pub async fn lsp_plugin_uninstall(
-    app: AppHandle,
+pub async fn lsp_plugin_cancel_install(
     plugins: tauri::State<'_, LspPluginManager>,
     plugin_id: String,
     version: String,
+) -> Result<bool, String> {
+    Ok(plugins.cancel_install(&plugin_id, &version).await)
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_uninstall(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    manager: tauri::State<'_, LspManager>,
+    plugin_id: String,
+    version: String,
 ) -> Result<(), String> {
+    manager.stop_matching(&plugin_id).await;
     plugins.uninstall(&app, &plugin_id, &version).await
+}
+
+#[tauri::command]
+pub async fn lsp_plugin_rollback(
+    app: AppHandle,
+    plugins: tauri::State<'_, LspPluginManager>,
+    manager: tauri::State<'_, LspManager>,
+    plugin_id: String,
+    version: String,
+) -> Result<(), String> {
+    manager.stop_matching(&plugin_id).await;
+    plugins.rollback(&app, &plugin_id, &version).await
 }
 
 #[tauri::command]

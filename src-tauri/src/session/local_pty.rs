@@ -103,6 +103,22 @@ impl LocalPtyRegistry {
             let _ = handle.killer.kill();
         }
     }
+
+    /// 应用退出前终止全部本地 shell/Agent，防止窗口退出后后台残留进程。
+    pub async fn kill_all(&self) {
+        let mut handles = self.ptys.lock().await;
+        let active = std::mem::take(&mut *handles);
+        drop(handles);
+        for (_, mut handle) in active {
+            #[cfg(unix)]
+            if let Some(pid) = handle.process_id {
+                unsafe {
+                    let _ = libc::kill(-(pid as libc::pid_t), libc::SIGHUP);
+                }
+            }
+            let _ = handle.killer.kill();
+        }
+    }
 }
 
 /// 在本地打开一个终端，返回 TerminalHandle（port + token）。

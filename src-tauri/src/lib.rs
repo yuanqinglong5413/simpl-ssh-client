@@ -9,7 +9,56 @@
 mod commands;
 mod session;
 
-use tauri::Manager;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tauri::{Emitter, Manager};
+
+#[derive(Default)]
+struct ShutdownCoordinator {
+    running: AtomicBool,
+}
+
+/// 统一的真实退出路径：不把窗口隐藏到托盘，也不保留 SSH、本地 shell、Agent 或项目任务。
+async fn shutdown_and_exit(app: tauri::AppHandle) {
+    if app
+        .state::<ShutdownCoordinator>()
+        .running
+        .swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let _ = app.emit("app://shutdown-progress", "saving-workspace");
+    // 给前端一次同步写入最新标签快照的机会；即便 WebView 已不可用，后续清理仍会继续。
+    let _ = app.emit("app://shutdown-requested", ());
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let cleanup = async {
+        let _ = app.emit("app://shutdown-progress", "stopping-tasks");
+        app.state::<session::TaskRunner>().cancel_all(&app);
+        app.state::<session::ProjectBatchManager>().cancel_all(&app);
+        app.state::<session::ProjectIndexManager>().cancel_all();
+        app.state::<session::ProjectSearchManager>().cancel_all();
+        app.state::<session::ProjectWatchManager>().stop_all();
+        app.state::<session::TransferQueue>().shutdown().await;
+        app.state::<session::LspManager>().stop_all().await;
+
+        let _ = app.emit("app://shutdown-progress", "closing-terminals");
+        app.state::<std::sync::Arc<session::LocalPtyRegistry>>()
+            .kill_all()
+            .await;
+        app.state::<session::PortForwardManager>().close_all().await;
+        app.state::<session::SftpManager>().close_all().await;
+
+        let _ = app.emit("app://shutdown-progress", "disconnecting-ssh");
+        app.state::<session::SessionManager>()
+            .disconnect_all()
+            .await;
+    };
+    // 退出不能无限等待坏掉的远端或子进程。超时后 AppHandle drop/进程退出完成兜底。
+    let _ = tokio::time::timeout(Duration::from_secs(6), cleanup).await;
+    let _ = app.emit("app://shutdown-progress", "done");
+    app.exit(0);
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,6 +68,22 @@ pub fn run() {
         .init();
 
     let builder = tauri::Builder::default();
+    let database = std::sync::Arc::new(session::AppDatabase::open_resilient());
+    let profiles = session::ProfileStore::new(database.clone());
+    let groups = session::GroupStore::new(database.clone());
+    let projects = session::ProjectStore::new(database.clone());
+    let snippets = session::SnippetStore::new(database.clone());
+    let workspace = session::WorkspaceStore::new(database.clone());
+    if let Err(error) =
+        tauri::async_runtime::block_on(groups.separate_legacy_project_tree(&projects))
+    {
+        let _ = database.record_warning(&format!(
+            "项目分组兼容迁移未完成，可在下次启动重试：{error}"
+        ));
+    }
+    if let Err(error) = profiles.retry_secret_cleanup() {
+        let _ = database.record_warning(&format!("钥匙串清理队列重试失败：{error}"));
+    }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(window) = app.get_webview_window("main") {
@@ -35,15 +100,17 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .manage(session::SessionManager::default())
+        .manage(ShutdownCoordinator::default())
+        .manage(database)
         .manage(session::SftpManager::default())
-        .manage(session::ProfileStore::default())
-        .manage(session::GroupStore::default())
+        .manage(profiles)
+        .manage(groups)
         .manage(session::TransferQueue::default())
         .manage(session::PortForwardManager::default())
         .manage(session::HostKeyVerifier::default())
         .manage(session::MonitorStore::default())
-        .manage(session::WorkspaceStore::default())
-        .manage(session::ProjectStore::default())
+        .manage(workspace)
+        .manage(projects)
         .manage(session::ProjectIndexManager::default())
         .manage(session::ProjectSearchManager::default())
         .manage(session::ProjectBatchManager::default())
@@ -51,7 +118,7 @@ pub fn run() {
         .manage(session::TaskRunner::default())
         .manage(session::LspManager::default())
         .manage(session::LspPluginManager::default())
-        .manage(session::SnippetStore::default())
+        .manage(snippets)
         .setup(|app| {
             // 启动本地 WebSocket 服务（终端 PTY 流式传输），端口随机。
             let bridge = tauri::async_runtime::block_on(session::TerminalBridge::start())?;
@@ -71,7 +138,12 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("Simpl SSH")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            shutdown_and_exit(app).await;
+                        });
+                    }
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
@@ -95,14 +167,19 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 关闭窗口时隐藏到托盘而非退出（保持 SSH 连接后台常驻）；
-            // 托盘菜单「退出 Simpl SSH」才真正退出。
+            // 用户点击窗口关闭即真实退出：先释放 SSH、PTY、Agent 和任务，再退出进程。
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
                 api.prevent_close();
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    shutdown_and_exit(app).await;
+                });
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::storage_status,
+            commands::storage_backup,
+            commands::storage_retry_secret_cleanup,
             commands::ssh_exec,
             commands::ssh_connect,
             commands::ssh_list_sessions,
@@ -144,6 +221,12 @@ pub fn run() {
             commands::group_create,
             commands::group_rename,
             commands::group_delete,
+            commands::resource_group_list,
+            commands::resource_group_create,
+            commands::resource_group_move,
+            commands::resource_item_move,
+            commands::resource_group_delete_preview,
+            commands::resource_group_delete,
             commands::monitor_snapshot,
             commands::hostkey_trust,
             commands::hostkey_reject,
@@ -179,7 +262,9 @@ pub fn run() {
             commands::lsp_plugin_refresh_catalog,
             commands::lsp_plugin_check,
             commands::lsp_plugin_install,
+            commands::lsp_plugin_cancel_install,
             commands::lsp_plugin_uninstall,
+            commands::lsp_plugin_rollback,
             commands::lsp_plugin_enable,
             commands::lsp_plugin_disable,
             commands::lsp_plugin_resolve,

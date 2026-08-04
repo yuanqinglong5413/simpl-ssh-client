@@ -13,7 +13,7 @@ Simpl SSH 不会在首次打开项目时自动下载、安装或执行语言服�
 
 ## 发布新的目录
 
-1. 为每个平台打包独立 zip：`darwin-aarch64`、`darwin-x86_64`、`linux-x86_64`、`windows-x86_64`。运行时必须包含它依赖的 Node 或 JRE；不得依赖用户的 PATH、`JAVA_HOME`、npm 或 pip。
+1. 为每个平台打包独立 zip：`darwin-arm64`、`darwin-x64`、`linux-arm64`、`linux-x64`、`windows-arm64`、`windows-x64`。运行时必须包含它依赖的 Node 或 JRE；不得依赖用户的 PATH、`JAVA_HOME`、npm 或 pip。
 2. 填写 `.github/lsp/lsp-catalog.payload.example.json` 的副本。每个 `runtimes.<platform>` 必须包括：Release asset URL、zip 的 SHA-256、zip 的 Ed25519 签名、相对可执行文件路径和参数。
 3. 用 `LSP_CATALOG_SIGNING_PRIVATE_KEY`（base64 编码的 PKCS#8 Ed25519 PEM）运行：
 

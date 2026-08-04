@@ -62,6 +62,7 @@ jobs:
       - name: Prepare updater signing options
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIMPL_SSH_LSP_CATALOG_PUBLIC_KEY: ${{ vars.LSP_CATALOG_PUBLIC_KEY }}
         run: node .github/scripts/prepare-release.mjs
 
       # macOS：导入 Developer ID 证书到临时钥匙串，供 codesign / notarize 使用。
@@ -74,7 +75,10 @@ jobs:
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "APPLE_CERTIFICATE 未配置，跳过 codesign 钥匙串导入（产出未签名 .dmg）。"
+            case "${GITHUB_REF_NAME:-}" in
+              v0.1[4-9]*|v0.[2-9][0-9]*|v[1-9]*) echo "v0.14+ 正式发布必须配置 APPLE_CERTIFICATE。"; exit 1 ;;
+            esac
+            echo "APPLE_CERTIFICATE 未配置；v0.12/v0.13 兼容构建使用 ad-hoc 签名。"
             echo "MACOS_SIGNED=false" >> "$GITHUB_ENV"
             exit 0
           fi

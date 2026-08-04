@@ -49,7 +49,8 @@ function loadSettings(): AppSettings {
         : DEFAULT_SETTINGS.languageServers;
       const installedLspPlugins = Array.isArray(saved.installedLspPlugins) ? saved.installedLspPlugins.flatMap((item) => {
         const value = item as Record<string, unknown>;
-        return typeof value.pluginId === "string" && typeof value.version === "string" ? [{ pluginId: value.pluginId, version: value.version, enabled: value.enabled !== false, priority: typeof value.priority === "number" ? value.priority : 0, ...(value.source === "system" || value.source === "bundled" ? { source: value.source as "system" | "bundled" } : {}) }] : [];
+        const source: "managed" | "custom" | "system-detected" | undefined = value.source === "managed" || value.source === "bundled" ? "managed" : value.source === "custom" ? "custom" : value.source === "system" || value.source === "managed-system" || value.source === "system-detected" ? "system-detected" : undefined;
+        return typeof value.pluginId === "string" && typeof value.version === "string" ? [{ pluginId: value.pluginId, version: value.version, enabled: value.enabled !== false, priority: typeof value.priority === "number" ? value.priority : 0, ...(source ? { source } : {}) }] : [];
       }) : DEFAULT_SETTINGS.installedLspPlugins;
       const languageHighlighting = saved.languageHighlighting && typeof saved.languageHighlighting === "object"
         ? Object.fromEntries(Object.entries(saved.languageHighlighting).filter(([, value]) => typeof value === "boolean"))

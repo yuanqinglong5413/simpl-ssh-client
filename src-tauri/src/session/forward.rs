@@ -226,6 +226,19 @@ impl PortForwardManager {
             self.remove(&id).await;
         }
     }
+
+    pub async fn close_all(&self) {
+        let ids = self
+            .forwards
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.remove(&id).await;
+        }
+    }
 }
 
 /// `-L` 本地转发：accept 循环，每个连接开 direct-tcpip 并桥接。

@@ -1,4 +1,4 @@
-import { Activity, ChevronDown, FileCode, Folder, FolderTree, GitBranch, MoreHorizontal, Plus, SquareTerminal, Terminal, X } from "lucide-react";
+import { Activity, ChevronDown, FileCode, Folder, FolderTree, GitBranch, MoreHorizontal, PlugZap, Plus, SquareTerminal, Terminal, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Tab } from "../types";
 
@@ -43,7 +43,9 @@ export function TabBar({
           onKeyDown={(event) => onTabKeyDown(event, index)}
           title={t.title}
         >
-          {t.kind === "project-workbench" ? (
+          {t.kind === "lsp-catalog" ? (
+            <PlugZap size={13} />
+          ) : t.kind === "project-workbench" ? (
             <FolderTree size={13} />
           ) : t.kind === "sftp" ? (
             <Folder size={13} />

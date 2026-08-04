@@ -1,12 +1,14 @@
-//! 本地项目存储：JSON 文件持久化（参考 ProfileStore 模式）。
+//! 本地项目存储：SQLite 事务持久化（参考 ProfileStore 模式）。
 //!
 //! 项目 = 本地路径 + 名称 + 可选分组 + 关联的 SSH 连接配置。
-//! 路径：`config_dir/simpl-ssh/projects.json`
+//! 旧 `projects.json` 仅作为首次迁移来源和只读备份保留。
 
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+use super::storage::AppDatabase;
 
 /// 项目与远程环境的关联。`remote_path` 为空时使用 SSH 登录后的默认目录。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,26 +61,22 @@ pub struct ProjectInput {
 /// 项目存储。作为 Tauri State 注入。
 pub struct ProjectStore {
     projects: Mutex<Vec<Project>>,
-    path: PathBuf,
+    database: Arc<AppDatabase>,
 }
 
 impl Default for ProjectStore {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(AppDatabase::default()))
     }
 }
 
 impl ProjectStore {
-    /// 从磁盘加载（文件不存在则空）。
-    pub fn new() -> Self {
-        let path = project_path();
-        let projects = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+    /// 从 SQLite 加载（没有项目则为空）。
+    pub fn new(database: Arc<AppDatabase>) -> Self {
+        let projects = database.load("projects").ok().flatten().unwrap_or_default();
         Self {
             projects: Mutex::new(projects),
-            path,
+            database,
         }
     }
 
@@ -145,6 +143,60 @@ impl ProjectStore {
         Ok(())
     }
 
+    pub async fn count_in_groups(&self, group_ids: &[String]) -> usize {
+        self.projects
+            .lock()
+            .await
+            .iter()
+            .filter(|project| {
+                project
+                    .group_id
+                    .as_ref()
+                    .is_some_and(|id| group_ids.contains(id))
+            })
+            .count()
+    }
+
+    /// 只删除 Simpl SSH 项目记录；绝不触碰 `local_path` 指向的物理目录。
+    pub async fn delete_in_groups(&self, group_ids: &[String]) -> Result<usize, String> {
+        let mut guard = self.projects.lock().await;
+        let before = guard.len();
+        guard.retain(|project| {
+            !project
+                .group_id
+                .as_ref()
+                .is_some_and(|id| group_ids.contains(id))
+        });
+        let removed = before - guard.len();
+        if removed > 0 {
+            self.persist(&guard)?;
+        }
+        Ok(removed)
+    }
+
+    pub async fn remap_group_ids(
+        &self,
+        mapping: &std::collections::HashMap<String, String>,
+    ) -> Result<(), String> {
+        let mut guard = self.projects.lock().await;
+        let mut changed = false;
+        for project in guard.iter_mut() {
+            if let Some(next) = project
+                .group_id
+                .as_ref()
+                .and_then(|id| mapping.get(id))
+                .cloned()
+            {
+                project.group_id = Some(next);
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist(&guard)?;
+        }
+        Ok(())
+    }
+
     /// 删除不存在的 Agent 预设引用。预设存储在前端设置中，因而由调用方传入有效 ID。
     pub async fn prune_agent_bindings(&self, preset_ids: Vec<String>) -> Result<usize, String> {
         let allowed: HashSet<String> = preset_ids
@@ -180,13 +232,37 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn persist(&self, projects: &[Project]) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    pub async fn move_to_group(&self, id: &str, group_id: Option<String>) -> Result<(), String> {
+        let mut guard = self.projects.lock().await;
+        let project = guard
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or("项目不存在")?;
+        project.group_id = group_id;
+        self.persist(&guard)
+    }
+
+    pub async fn remove_profile_refs(&self, profile_id: &str) -> Result<usize, String> {
+        let mut guard = self.projects.lock().await;
+        let mut removed = 0;
+        for project in guard.iter_mut() {
+            let before_links = project.linked_profiles.len();
+            let before_workspaces = project.remote_workspaces.len();
+            project.linked_profiles.retain(|id| id != profile_id);
+            project
+                .remote_workspaces
+                .retain(|item| item.profile_id != profile_id);
+            removed += before_links - project.linked_profiles.len();
+            removed += before_workspaces - project.remote_workspaces.len();
         }
-        let json = serde_json::to_string_pretty(projects).map_err(|e| e.to_string())?;
-        std::fs::write(&self.path, json).map_err(|e| e.to_string())?;
-        Ok(())
+        if removed > 0 {
+            self.persist(&guard)?;
+        }
+        Ok(removed)
+    }
+
+    fn persist(&self, projects: &[Project]) -> Result<(), String> {
+        self.database.save("projects", projects)
     }
 }
 
@@ -248,11 +324,6 @@ fn normalize_workspaces(
     }
     let linked_profiles = workspaces.iter().map(|w| w.profile_id.clone()).collect();
     (linked_profiles, workspaces)
-}
-
-fn project_path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("simpl-ssh").join("projects.json")
 }
 
 #[cfg(test)]

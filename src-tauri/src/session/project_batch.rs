@@ -56,6 +56,19 @@ pub struct ProjectBatchManager {
 }
 
 impl ProjectBatchManager {
+    pub fn cancel_all(&self, app: &AppHandle) {
+        let ids = self
+            .jobs
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.cancel(app, &id);
+        }
+    }
+
     pub fn start(
         &self,
         app: &AppHandle,

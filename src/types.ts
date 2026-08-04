@@ -15,6 +15,15 @@ export type ProfileGroup = {
   id: string;
   name: string;
   order: number;
+  parent_id?: string | null;
+  kind?: "connection" | "project";
+};
+
+export type ResourceGroupDeletePreview = {
+  group_count: number;
+  connection_count: number;
+  project_count: number;
+  deletes_physical_files: false;
 };
 
 export type ConnectionProfile = {
@@ -52,7 +61,10 @@ export type SplitNode =
     };
 
 /** Tab 种类 */
-export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git" | "local-terminal" | "local-editor" | "local-git" | "project-workbench";
+export type TabKind = "terminal" | "sftp" | "monitor" | "editor" | "git" | "local-terminal" | "local-editor" | "local-git" | "project-workbench" | "lsp-catalog";
+
+/** SSH 终端标签内的主视图。文件视图与终端共用同一个标签和 SSH 会话。 */
+export type TerminalWorkspaceView = "terminal" | "files" | "split";
 
 /** Tab 数据来源：ssh = 远程会话，local = 本地项目 */
 export type TabSource = "ssh" | "local";
@@ -100,6 +112,12 @@ export type Tab = {
   localPath?: string;
   /** 项目工作区打开终端后注入的命令（例如进入远程根目录）。 */
   startupCommand?: string;
+  /** 终端标签内切换文件面板时保留终端实例和滚动缓冲，不再另开 SFTP 标签。 */
+  terminalView?: TerminalWorkspaceView;
+  /** 已经打开过的文件面板保持挂载，切回终端后不重新加载目录。 */
+  sftpOpened?: boolean;
+  terminalFileSplitDirection?: "horizontal" | "vertical";
+  terminalFileSplitRatio?: number;
   /** 项目 Agent 标签不参与工作区自动恢复。 */
   agentPresetId?: string;
   agentStatus?: "running" | "exited" | "failed";
@@ -300,6 +318,10 @@ export type WorkspaceTab = {
   projectId?: string | null;
   localPath?: string;
   startupCommand?: string;
+  terminalView?: TerminalWorkspaceView;
+  sftpOpened?: boolean;
+  terminalFileSplitDirection?: "horizontal" | "vertical";
+  terminalFileSplitRatio?: number;
   agentPresetId?: string;
 };
 

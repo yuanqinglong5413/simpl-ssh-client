@@ -127,6 +127,10 @@ impl ProjectWatchManager {
             watches.remove(&key);
         }
     }
+
+    pub fn stop_all(&self) {
+        self.watches.lock().unwrap().clear();
+    }
 }
 
 fn stamp(root: &std::path::Path, relative_path: &str) -> Option<FileStamp> {

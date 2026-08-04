@@ -262,6 +262,25 @@ impl SessionManager {
         }
         Ok(())
     }
+
+    /// 应用退出时关闭所有已建立的 SSH（及跳板）连接。
+    pub async fn disconnect_all(&self) {
+        let entries = {
+            let mut sessions = self.sessions.lock().await;
+            std::mem::take(&mut *sessions)
+        };
+        for (_, entry) in entries {
+            let _ = entry
+                .handle
+                .disconnect(Disconnect::ByApplication, "application exit", "en")
+                .await;
+            if let Some(jump) = entry.jump_handle.clone() {
+                let _ = jump
+                    .disconnect(Disconnect::ByApplication, "application exit", "en")
+                    .await;
+            }
+        }
+    }
 }
 
 /// TCP 建连（带超时与进度推送）。

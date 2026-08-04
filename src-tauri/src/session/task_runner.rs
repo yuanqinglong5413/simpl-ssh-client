@@ -120,6 +120,20 @@ impl TaskRunner {
         emit_state(app, &task);
         Ok(())
     }
+
+    /// 关闭应用时请求取消全部受监管任务；各任务随后按平台终止完整进程树。
+    pub fn cancel_all(&self, app: &AppHandle) {
+        let ids = self
+            .tasks
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.cancel(app, &id);
+        }
+    }
 }
 
 async fn run_task(
